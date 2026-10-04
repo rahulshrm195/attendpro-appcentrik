@@ -62,23 +62,87 @@ async function fbGet(path){
   const snap = await getDoc(doc(db, path));
   return snap.exists() ? snap.data() : null;
 }
-// ── Punch write queue (offline-first) ──
+// ── Punch write queue (offline-first, IndexedDB) ──
+// pqMem mirrors the IndexedDB store so reads stay instant. Every queued
+// record carries a version (v); a finished write only removes the entry
+// if no newer punch for the same record was queued meanwhile.
+var pqMem={};
 var punchInflight={};
 var punchFlushing=false;
-function pqGet(){return ls.get('ap_punch_queue',[]);}
-function pqPut(key,data){
-  var q=pqGet().filter(function(i){return i.key!==key;});
-  q.push({key:key,data:data});
-  ls.set('ap_punch_queue',q);
+var pqSeq=0;
+var pqDbP=null;
+function pqDb(){
+  if(!pqDbP)pqDbP=new Promise(function(resolve,reject){
+    if(!window.indexedDB)return reject(new Error('IndexedDB unavailable'));
+    var r=indexedDB.open('attendpro',1);
+    r.onupgradeneeded=function(){r.result.createObjectStore('punch_queue',{keyPath:'key'});};
+    r.onsuccess=function(){resolve(r.result);};
+    r.onerror=function(){reject(r.error);};
+  });
+  return pqDbP;
 }
-function pqDrop(key){
-  ls.set('ap_punch_queue',pqGet().filter(function(i){return i.key!==key;}));
+function pqTx(mode,fn){
+  return pqDb().then(function(db){
+    return new Promise(function(resolve,reject){
+      var tx=db.transaction('punch_queue',mode);
+      var req=fn(tx.objectStore('punch_queue'));
+      tx.oncomplete=function(){resolve(req?req.result:undefined);};
+      tx.onerror=tx.onabort=function(){reject(tx.error);};
+    });
+  });
 }
-function pendingRec(key){
-  if(punchInflight[key])return punchInflight[key];
-  var q=pqGet();
-  for(var i=0;i<q.length;i++){if(q[i].key===key)return q[i].data;}
-  return null;
+// localStorage holds only the fallback copy (used when IndexedDB fails)
+function pqLsGet(){return ls.get('ap_punch_queue',[]);}
+function pqLsSet(q){
+  try{
+    if(q.length)localStorage.setItem('ap_punch_queue',JSON.stringify(q));
+    else localStorage.removeItem('ap_punch_queue');
+    return true;
+  }catch(e){return false;}
+}
+function pqLsDrop(key,v){
+  var q=pqLsGet();
+  var nq=q.filter(function(i){return !(i.key===key&&(v==null||i.v===v));});
+  if(nq.length!==q.length)pqLsSet(nq);
+}
+// Returns the queued item; item.unsaved is true when no local copy could be stored
+async function pqPut(key,data){
+  var item={key:key,v:Date.now()+'_'+(++pqSeq),data:data};
+  pqMem[key]=item;
+  try{
+    await pqTx('readwrite',function(st){return st.put(item);});
+    pqLsDrop(key);
+  }catch(e){
+    var q=pqLsGet().filter(function(i){return i.key!==key;});
+    q.push(item);
+    if(!pqLsSet(q))item.unsaved=true;
+  }
+  return item;
+}
+function pqDrop(item){
+  var cur=pqMem[item.key];
+  if(!cur||cur.v!==item.v)return;
+  delete pqMem[item.key];
+  pqTx('readwrite',function(st){return st.delete(item.key);}).catch(function(){});
+  pqLsDrop(item.key,item.v);
+}
+// Load the queue on startup; also picks up v1.18.7 localStorage entries
+var pqReady=pqTx('readonly',function(st){return st.getAll();})
+  .then(function(items){(items||[]).forEach(function(i){pqMem[i.key]=i;});})
+  .catch(function(){})
+  .then(async function(){
+    var old=pqLsGet();
+    for(var i=0;i<old.length;i++){
+      var o=old[i];
+      if(pqMem[o.key])continue;
+      var item={key:o.key,v:o.v||(Date.now()+'_'+(++pqSeq)),data:o.data};
+      pqMem[o.key]=item;
+      try{await pqTx('readwrite',function(st){return st.put(item);});pqLsDrop(o.key);}catch(e){}
+    }
+  });
+async function pendingRec(key){
+  await pqReady;
+  return pqMem[key]?pqMem[key].data:null;
 }
 function cleanCopy(o){var c=JSON.parse(JSON.stringify(o));delete c._updatedAt;return c;}
 function isDupPunch(sessions,now){
@@ -88,30 +152,49 @@ function isDupPunch(sessions,now){
   if(!t)return false;
   return (now-new Date(t))<20000;
 }
-// Save in background: never blocks the UI; failed writes wait in the queue
-function savePunchBg(key,rec){
-  var clean=cleanCopy(rec);
-  punchInflight[key]=clean;
-  pqPut(key,clean);
-  fbSet(key,cleanCopy(rec)).then(function(){
-    delete punchInflight[key];
-    pqDrop(key);
-  }).catch(function(){
-    delete punchInflight[key];
+// Status cache for offline display: selfies stripped, only today's kept
+function recCacheSet(sid,date,rec){
+  var c=cleanCopy(rec);
+  delete c.inSelfie;delete c.outSelfie;
+  (c.sessions||[]).forEach(function(s){delete s.inSelfie;delete s.outSelfie;});
+  ls.set('ap_rec_cache_'+sid+'_'+date,c);
+}
+(function pruneRecCache(){
+  try{
+    var today=todayStr(),old=[];
+    for(var i=0;i<localStorage.length;i++){
+      var k=localStorage.key(i);
+      if(k&&k.indexOf('ap_rec_cache_')===0&&k.slice(-10)!==today)old.push(k);
+    }
+    old.forEach(function(k){localStorage.removeItem(k);});
+  }catch(e){}
+})();
+function pqSend(item){
+  punchInflight[item.key]=item.v;
+  return fbSet(item.key,cleanCopy(item.data)).then(function(){
+    pqDrop(item);
+  }).finally(function(){
+    if(punchInflight[item.key]===item.v)delete punchInflight[item.key];
   });
 }
+// Queue locally, then write to Firestore in the background.
+// Resolves false only if the punch could not be stored on this device.
+async function savePunchBg(key,rec){
+  var item=await pqPut(key,cleanCopy(rec));
+  pqSend(item).catch(function(){});
+  return !item.unsaved;
+}
 async function flushPunchQueue(){
-  if(punchFlushing)return;
-  var q=pqGet();
-  if(!q.length)return;
+  if(punchFlushing||navigator.onLine===false)return;
   punchFlushing=true;
-  for(var i=0;i<q.length;i++){
-    try{
-      await fbSet(q[i].key,cleanCopy(q[i].data));
-      pqDrop(q[i].key);
-    }catch(e){break;}
-  }
-  punchFlushing=false;
+  try{
+    await pqReady;
+    var items=Object.keys(pqMem).map(function(k){return pqMem[k];});
+    for(var i=0;i<items.length;i++){
+      if(punchInflight[items[i].key])continue;
+      try{await pqSend(items[i]);}catch(e){break;}
+    }
+  }finally{punchFlushing=false;}
 }
 window.addEventListener('online',function(){flushPunchQueue();});
 setInterval(function(){flushPunchQueue();},30000);
@@ -397,7 +480,7 @@ window.showStaffTab=function(tab,btn){
 async function renderStaffStatus(){
   const today=todayStr();
   let rec=null;
-  const pend=pendingRec(p.rec(currentStaff.id,today));
+  const pend=await pendingRec(p.rec(currentStaff.id,today));
   if(pend){rec=pend;}
   else{
     try{rec=await fbGet(p.rec(currentStaff.id,today));}
@@ -530,7 +613,7 @@ async function doConfirmPunch(){
   }catch(e){gpsData={error:'GPS unavailable'};}
 
   // ── Read latest record (pending local write wins) ──
-  let rec=pendingRec(key);
+  let rec=await pendingRec(key);
   if(!rec){
     try{rec=await fbGet(key);}catch{rec=ls.get('ap_rec_cache_'+currentStaff.id+'_'+today);}
   }
@@ -572,8 +655,8 @@ async function doConfirmPunch(){
   }
   rec.sessions=sessions;
 
-  ls.set('ap_rec_cache_'+currentStaff.id+'_'+today,cleanCopy(rec));
-  savePunchBg(key,rec);
+  recCacheSet(currentStaff.id,today,rec);
+  if(!await savePunchBg(key,rec))toast('⚠️ Phone storage full — keep internet on until this punch syncs');
   capturedSelfie=null;
   const isIn=punchAction==='in';
   const sNum=sessions.length;
@@ -2745,7 +2828,7 @@ async function ksDoPunch(){
     }
   }catch(e){gpsData={error:'GPS unavailable'};}
 
-  var rec=pendingRec(key);
+  var rec=await pendingRec(key);
   if(!rec){try{rec=await fbGet(key);}catch(e){}}
   if(!rec)rec={staffId:s.id,staffName:s.name,date:today,sessions:[]};
   if(!rec.sessions)rec.sessions=[];
@@ -2784,7 +2867,7 @@ async function ksDoPunch(){
     rec.outTime=ts;
   }
   rec.sessions=sessions;
-  savePunchBg(key,rec);
+  if(!await savePunchBg(key,rec))toast('⚠️ Device storage full — keep internet on until this punch syncs');
 
   // Confirm screen
   ksStep('confirm');
@@ -3379,7 +3462,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.18.7</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.18.8</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4263,7 +4346,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.18.7</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.18.8</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -4271,11 +4354,23 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.18.8 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.18.8</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Offline punches are now stored in the phone's database instead of small browser storage, so punches taken offline are no longer lost when storage fills up</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Fixed a rare case where a quick punch-out could be dropped while the punch-in was still syncing</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Old cached attendance data is cleaned up automatically to free space on staff phones</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.18.7 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.18.7</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.18.7</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Fixed duplicate punch sessions — double taps are now blocked, and a repeat punch within 20 seconds is ignored</span></div>
