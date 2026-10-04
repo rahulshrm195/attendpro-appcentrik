@@ -2562,6 +2562,7 @@ window.saLoadDashboard=async function(){
 var ksBiz=null, ksBizId=null, ksStaffArr=[], ksSettings={};
 var ksSelectedStaff=null, ksPinEntry='', ksSelfieData=null;
 var ksCountdownTimer=null, ksVideoStream=null;
+var ksMode='punch', ksLeaveReqId=null, ksLeaveIdleTimer=null, ksLeaveBusy=false;
 
 window.kioskLogin=async function(){
   var code=(document.getElementById('kiosk-login-code').value||'').trim().toUpperCase();
@@ -2608,7 +2609,7 @@ window.saveKioskPin=async function(){
 };
 
 function ksStep(name){
-  ['grid','pin','selfie','confirm'].forEach(function(s){
+  ['grid','pin','selfie','leave','confirm'].forEach(function(s){
     var el=document.getElementById('ks-step-'+s);
     if(el)el.style.display=(s===name?'block':'none');
   });
@@ -2618,7 +2619,9 @@ function ksReset(){
   ksPunchBusy=false;
   ksSelectedStaff=null;ksPinEntry='';ksSelfieData=null;
   if(ksCountdownTimer){clearInterval(ksCountdownTimer);ksCountdownTimer=null;}
+  if(ksLeaveIdleTimer){clearTimeout(ksLeaveIdleTimer);ksLeaveIdleTimer=null;}
   ksStopCamera();
+  ksSetMode('punch');
   ksStep('grid');
   ksRenderGrid();
 }
@@ -2663,6 +2666,12 @@ window.ksSelectStaff=function(sid){
   document.getElementById('ks-pin-avatar').textContent=s.name.charAt(0).toUpperCase();
   document.getElementById('ks-pin-name').textContent=s.name;
   document.getElementById('ks-pin-error').textContent='';
+  if(ksMode==='leave'){
+    document.getElementById('ks-pin-action').textContent='📋 Request leave';
+    ksUpdateDots();
+    ksStep('pin');
+    return;
+  }
   // Show punch direction
   var today=todayStr();
   var origBizId=BIZ_ID;BIZ_ID=ksBizId;
@@ -2705,7 +2714,8 @@ function ksVerifyPin(){
   var s=ksSelectedStaff;if(!s)return;
   if(ksPinEntry===s.pin){
     document.getElementById('ks-pin-error').textContent='';
-    ksOpenCamera();
+    if(ksMode==='leave')ksOpenLeaveForm();
+    else ksOpenCamera();
   } else {
     for(var i=0;i<4;i++){var dot=document.getElementById('ks-kd'+i);if(dot){dot.classList.remove('filled');dot.classList.add('error');}}
     document.getElementById('ks-pin-error').textContent='Wrong PIN. Try again.';
@@ -2881,8 +2891,10 @@ async function ksDoPunch(){
   if(ksSelfieData&&selfieImg){selfieImg.src=ksSelfieData;selfieImg.style.display='block';}
   else if(selfieImg)selfieImg.style.display='none';
 
-  // Countdown
-  var secs=5;
+  ksStartCountdown(5);
+}
+
+function ksStartCountdown(secs){
   var cdEl=document.getElementById('ks-countdown');
   if(cdEl)cdEl.textContent='Resetting in '+secs+'s…';
   ksCountdownTimer=setInterval(function(){
@@ -2891,6 +2903,124 @@ async function ksDoPunch(){
     if(secs<=0){clearInterval(ksCountdownTimer);ksCountdownTimer=null;ksReset();}
   },1000);
 }
+
+// ─────────────────────────────────────────────
+//  KIOSK — LEAVE REQUEST
+// ─────────────────────────────────────────────
+function ksEsc(t){return String(t==null?'':t).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+
+function ksSetMode(mode){
+  ksMode=mode;
+  var isLeave=mode==='leave';
+  var t=document.getElementById('ks-grid-title'),sub=document.getElementById('ks-grid-sub');
+  if(t)t.textContent=isLeave?'📋 Who needs leave?':'👋 Who are you?';
+  if(sub)sub.textContent=isLeave?'Tap your name to request leave':'Tap your name to punch in or out';
+  var lb=document.getElementById('ks-leave-btn'),cb=document.getElementById('ks-leave-cancel-btn');
+  if(lb)lb.style.display=isLeave?'none':'block';
+  if(cb)cb.style.display=isLeave?'block':'none';
+}
+window.ksStartLeave=function(){ksSetMode('leave');};
+window.ksCancelLeave=function(){ksReset();};
+
+// Auto-return to the grid if the form is left open (shared phone)
+function ksLeaveTouch(){
+  if(ksLeaveIdleTimer)clearTimeout(ksLeaveIdleTimer);
+  ksLeaveIdleTimer=setTimeout(function(){ksLeaveIdleTimer=null;ksReset();},120000);
+}
+window.ksLeaveTouch=ksLeaveTouch;
+
+function ksOpenLeaveForm(){
+  var s=ksSelectedStaff;if(!s)return;
+  ksLeaveReqId=s.id+'_'+Date.now();
+  ksLeaveBusy=false;
+  var today=todayStr();
+  document.getElementById('ks-lr-name').textContent=s.name;
+  document.getElementById('ks-lr-type').value='full';
+  document.getElementById('ks-lr-from').value=today;
+  document.getElementById('ks-lr-to').value=today;
+  document.getElementById('ks-lr-time-from').value='';
+  document.getElementById('ks-lr-time-to').value='';
+  document.getElementById('ks-lr-reason').value='';
+  var btn=document.getElementById('ks-lr-submit');
+  btn.disabled=false;btn.textContent='Submit Request';
+  ksToggleLeaveHours();
+  ksStep('leave');
+  ksLeaveTouch();
+  ksLoadLeaveHistory(s.id);
+}
+
+function ksToggleLeaveHours(){
+  document.getElementById('ks-lr-hours-grp').style.display=v('ks-lr-type')==='custom'?'block':'none';
+}
+window.ksToggleLeaveHours=ksToggleLeaveHours;
+
+function ksLeaveTypeLabel(t){return t==='half'?'Half Day':t==='custom'?'Custom Hours':'Full Day';}
+
+function ksLoadLeaveHistory(sid){
+  var el=document.getElementById('ks-lr-history');if(!el)return;
+  el.innerHTML='';
+  var origBizId=BIZ_ID;BIZ_ID=ksBizId;
+  var path=p.requests();
+  BIZ_ID=origBizId;
+  fbList(path,where('staffId','==',sid)).then(function(all){
+    if(!ksSelectedStaff||ksSelectedStaff.id!==sid)return;
+    var leaves=all.filter(function(r){return r.type==='leave';})
+      .sort(function(a,b){return (b.ts||0)-(a.ts||0);}).slice(0,3);
+    if(!leaves.length)return;
+    el.innerHTML='<div style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:18px 0 8px;">Your recent leave requests</div>'+
+      leaves.map(function(r){
+        var st=r.status==='approved'?'<span class="status-approved">✓ Approved</span>':
+               r.status==='rejected'?'<span class="status-rejected">✗ Rejected</span>':
+               '<span class="status-pending">Pending</span>';
+        var dates=ksEsc(r.from)+(r.to&&r.to!==r.from?' → '+ksEsc(r.to):'');
+        return '<div class="req-card req-type-leave"><div class="req-card-head"><span class="req-card-title">'+ksLeaveTypeLabel(r.leaveType)+' · '+dates+'</span>'+st+'</div>'+
+          '<div class="req-card-meta">'+ksEsc(r.reason)+'</div></div>';
+      }).join('');
+  }).catch(function(){});
+}
+
+window.ksSubmitLeave=async function(){
+  var s=ksSelectedStaff;if(!s||ksLeaveBusy)return;
+  ksLeaveTouch();
+  var type=v('ks-lr-type'),from=v('ks-lr-from'),to=v('ks-lr-to'),reason=v('ks-lr-reason');
+  if(!from||!to)return toast('Select dates',true);
+  if(to<from)return toast('"To" date is before "From" date',true);
+  if(!reason)return toast('Enter a reason',true);
+  var tFrom=v('ks-lr-time-from'),tTo=v('ks-lr-time-to');
+  if(type==='custom'&&(!tFrom||!tTo))return toast('Select from and to time',true);
+  var req={
+    type:'leave',leaveType:type,
+    staffId:s.id,staffName:s.name,
+    from:from,to:to,reason:reason,status:'pending',ts:Date.now(),source:'kiosk',
+    _createdAt:serverTimestamp()
+  };
+  if(type==='custom'){req.timeFrom=tFrom;req.timeTo=tTo;}
+  var origBizId=BIZ_ID;BIZ_ID=ksBizId;
+  var path=p.reqDoc(ksLeaveReqId);
+  BIZ_ID=origBizId;
+  ksLeaveBusy=true;
+  var btn=document.getElementById('ks-lr-submit');
+  btn.disabled=true;btn.textContent='Sending…';
+  try{
+    // Fixed doc id: a retry after a timeout overwrites, never duplicates
+    await Promise.race([
+      fbSet(path,req),
+      new Promise(function(_,reject){setTimeout(function(){reject(new Error('timeout'));},12000);})
+    ]);
+  }catch(e){
+    ksLeaveBusy=false;
+    btn.disabled=false;btn.textContent='Submit Request';
+    return toast(e.message==='timeout'?'No internet — please try again':'Error: '+e.message,true);
+  }
+  if(ksLeaveIdleTimer){clearTimeout(ksLeaveIdleTimer);ksLeaveIdleTimer=null;}
+  ksStep('confirm');
+  document.getElementById('ks-confirm-icon').textContent='📋';
+  document.getElementById('ks-confirm-title').textContent='Leave Requested';
+  document.getElementById('ks-confirm-sub').textContent=s.name+' · '+ksLeaveTypeLabel(type)+' · '+from+(to!==from?' → '+to:'')+' · Waiting for approval';
+  var selfieImg=document.getElementById('ks-confirm-selfie');
+  if(selfieImg)selfieImg.style.display='none';
+  ksStartCountdown(5);
+};
 
 
 // ─────────────────────────────────────────────
@@ -3462,7 +3592,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.18.8</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.19.0</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4014,10 +4144,12 @@ textarea.form-input{resize:none;}
     <!-- STEP: Staff Grid -->
     <div id="ks-step-grid">
       <div style="text-align:center;padding:18px 0 10px;">
-        <div style="font-size:22px;font-weight:800;font-family:var(--fh);color:var(--text);">👋 Who are you?</div>
-        <div style="font-size:13px;color:var(--muted);margin-top:4px;">Tap your name to punch in or out</div>
+        <div id="ks-grid-title" style="font-size:22px;font-weight:800;font-family:var(--fh);color:var(--text);">👋 Who are you?</div>
+        <div id="ks-grid-sub" style="font-size:13px;color:var(--muted);margin-top:4px;">Tap your name to punch in or out</div>
       </div>
       <div id="ks-staff-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:4px 0 20px;"></div>
+      <button class="btn btn-ghost" id="ks-leave-btn" onclick="ksStartLeave()" style="border-color:var(--purple);color:var(--purple);">📋 Request Leave</button>
+      <button class="btn btn-ghost" id="ks-leave-cancel-btn" onclick="ksCancelLeave()" style="display:none;">← Back to punch</button>
     </div>
     <!-- STEP: PIN Entry -->
     <div id="ks-step-pin" style="display:none;">
@@ -4060,6 +4192,31 @@ textarea.form-input{resize:none;}
       </div>
       <button class="btn btn-primary" onclick="ksCaptureSelfie()" style="font-size:16px;padding:16px;">📸 Capture</button>
       <button class="btn btn-ghost" onclick="ksCancel()" style="margin-top:8px;">Cancel</button>
+    </div>
+    <!-- STEP: Leave Request -->
+    <div id="ks-step-leave" style="display:none;" oninput="ksLeaveTouch()" onchange="ksLeaveTouch()">
+      <div style="text-align:center;padding:14px 0 12px;">
+        <div style="font-size:20px;font-weight:800;font-family:var(--fh);">📋 Request Leave</div>
+        <div id="ks-lr-name" style="font-size:14px;color:var(--muted);margin-top:4px;"></div>
+      </div>
+      <div class="form-group"><label class="form-label">Leave Type</label>
+        <select class="form-input form-select" id="ks-lr-type" onchange="ksToggleLeaveHours()">
+          <option value="full">Full Day</option><option value="half">Half Day</option><option value="custom">Custom Hours</option>
+        </select></div>
+      <div class="two-col">
+        <div class="form-group"><label class="form-label">From Date</label><input type="date" class="form-input" id="ks-lr-from"></div>
+        <div class="form-group"><label class="form-label">To Date</label><input type="date" class="form-input" id="ks-lr-to"></div>
+      </div>
+      <div id="ks-lr-hours-grp" style="display:none;">
+        <div class="two-col">
+          <div class="form-group"><label class="form-label">From Time</label><input type="time" class="form-input" id="ks-lr-time-from"></div>
+          <div class="form-group"><label class="form-label">To Time</label><input type="time" class="form-input" id="ks-lr-time-to"></div>
+        </div>
+      </div>
+      <div class="form-group"><label class="form-label">Reason</label><textarea class="form-input" id="ks-lr-reason" placeholder="Brief reason for your leave…" rows="3"></textarea></div>
+      <button class="btn btn-primary" id="ks-lr-submit" onclick="ksSubmitLeave()" style="font-size:16px;padding:16px;">Submit Request</button>
+      <button class="btn btn-ghost" onclick="ksCancel()" style="margin-top:8px;">Cancel</button>
+      <div id="ks-lr-history"></div>
     </div>
     <!-- STEP: Confirm -->
     <div id="ks-step-confirm" style="display:none;text-align:center;padding:30px 0;">
@@ -4346,7 +4503,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.18.8</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.19.0</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -4354,11 +4511,23 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.19.0 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.19.0</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Leave requests from the shop phone — staff tap "Request Leave" on the kiosk, pick their name, enter their PIN and submit</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Kiosk requests land in the owner's Inbox for approval, just like requests from the staff app</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Staff can see the status of their last 3 leave requests on the kiosk</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.18.8 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.18.8</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.18.8</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Offline punches are now stored in the phone's database instead of small browser storage, so punches taken offline are no longer lost when storage fills up</span></div>
