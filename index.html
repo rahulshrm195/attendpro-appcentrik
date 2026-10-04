@@ -1197,7 +1197,7 @@ async function renderOwnerToday(){
       html+=attRowHtml({
         name:s.name,
         tags:(rec&&rec.late?'<span class="late-tag">LATE</span>':'')+(rec&&rec.gpsFlag?'<span class="gps-flag-tag">⚠️ LOCATION</span>':''),
-        thumb:thumbHTML(selfie,s.name,rec?rec.inTime:null),
+        thumb:selfiePairHtml(rec,s.name),
         edit:rec?attEditBtn(s.id,today):'',
         status:status,
         body:sub
@@ -1727,7 +1727,7 @@ window.renderReport=async function(){
             (hasOpenSession?'<span class="att-tag-open">⏳ No Punch Out</span>':'')+
             (r.late?'<span class="late-tag">LATE</span>':'')+(r.gpsFlag?'<span class="gps-flag-tag">⚠️ LOCATION</span>':'')+
             (r.manualEdit?'<span class="att-muted">edited</span>':'')+(r.manual?'<span class="att-muted">manual</span>':''),
-          thumb:thumbHTML(selfie,r.staffName,inT),
+          thumb:selfiePairHtml(r,r.staffName),
           edit:attEditBtn(r.staffId,r.date),
           body:sub
         });
@@ -1952,7 +1952,8 @@ window.renderPayroll=async function(){
     const marks={};marksAll.filter(function(m){return m.date&&m.date.startsWith(prefix);}).forEach(function(m){marks[m.date+(m.staffId?'_'+m.staffId:'')]=m;});
     const dim=new Date(year,month+1,0).getDate();
     const now=new Date(),isCur=(year===now.getFullYear()&&month===now.getMonth());
-    const upto=isCur?now.getDate():dim;
+    const isFuture=year>now.getFullYear()||(year===now.getFullYear()&&month>now.getMonth());
+    const upto=isFuture?0:isCur?now.getDate():dim;
     const [startH,startM]=cfg.startTime.split(':').map(Number);
     const [endH,endM]=cfg.endTime.split(':').map(Number);
     const shiftMins=(endH*60+endM)-(startH*60+startM);
@@ -1962,13 +1963,14 @@ window.renderPayroll=async function(){
     var minMins=Math.round((cfg.minHours||1)*60); // min to count as present
     // OT rate — resolve based on mode
     var otRatePerHour=0;
-    if(cfg.otRateMode==='auto') otRatePerHour=stdMins>0?Math.round(cfg.base/30/stdHours):0;
+    if(cfg.otRateMode==='auto') otRatePerHour=stdMins>0?Math.round(cfg.base/dim/stdHours):0;
     else if(cfg.otRateMode==='manual') otRatePerHour=cfg.otRate||0;
     else otRatePerHour=cfg.otRate||0; // legacy / none
 
     var workDays=0,present=0,absent=0,late=0,offDays=0;
     var totalWorkedMins=0,shortMins=0,shortDays=0,otMins=0;
-    var weeklyOffWorkedMins=0,weeklyOffWorked=0,weeklyOffPaidDays=0,paidLeaveDays=0;
+    var weeklyOffWorkedMins=0,weeklyOffWorked=0,weeklyOffPaidDays=0,paidLeaveDays=0,holidayDays=0;
+    const holidayPaid=settings.holidayPaid!==false;
 
     for(var i=1;i<=upto;i++){
       const ds=year+'-'+pad(month+1)+'-'+pad(i);
@@ -1976,6 +1978,11 @@ window.renderPayroll=async function(){
       const dow=new Date(year,month,i).getDay();
       const mark=marks[ds]||(marks[ds+'_'+sid]);
       const rec=recs[sid+'_'+ds];
+      // Today, still in progress: don't count it yet (not absent, not short)
+      if(isCur&&i===now.getDate()){
+        var openNow=rec&&(rec.sessions&&rec.sessions.length?rec.sessions.some(function(x){return !x.outTime;}):!rec.outTime);
+        if(!rec||openNow)continue;
+      }
       // Weekly off
       if(cfg.weeklyOff>=0&&dow==cfg.weeklyOff){
         offDays++;
@@ -1996,6 +2003,7 @@ window.renderPayroll=async function(){
           offDays++;
           // Paid leave — count separately, NOT added to totalWorkedMins (added to net directly)
           if(mark.type==='leave'&&mark.paidLeave) paidLeaveDays++;
+          if(mark.type==='holiday') holidayDays++;
           continue;
         }
         if(mark.paidLeave&&mark.leaveType==='half') paidLeaveDays+=0.5;
@@ -2035,7 +2043,9 @@ window.renderPayroll=async function(){
     }
 
     // ── Payroll calculations ──
-    const perDay=Math.round(cfg.base/30);
+    // Daily rate = salary ÷ days in this month (full attendance = full salary in every month)
+    const perDay=cfg.base/dim;
+    const perDayR=Math.round(perDay);
 
     // Base pay = actual hours worked (capped at std per day) ÷ std hours × per day rate
     // Absent days contribute 0 hours — no separate absent deduction needed
@@ -2047,7 +2057,7 @@ window.renderPayroll=async function(){
     }
     var basePay=stdMins>0?Math.round((totalWorkedMins/stdMins)*perDay):0;
     // Cap at eligible days worth of salary
-    var maxPay=eligibleDays<upto?perDay*eligibleDays:cfg.base;
+    var maxPay=eligibleDays<upto?Math.round(perDay*eligibleDays):cfg.base;
     basePay=Math.min(basePay,maxPay);
 
     // Short hours — informational only, no deduction
@@ -2066,7 +2076,7 @@ window.renderPayroll=async function(){
     // Weekly Off Paid Days — shown separately if showWoPay enabled
     // Business rule (Settings → Pay Rules); paid unless turned off
     var woPaid=settings.weeklyOffPaid!==false;
-    var woPay=woPaid?weeklyOffPaidDays*perDay:0;
+    var woPay=woPaid?Math.round(weeklyOffPaidDays*perDay):0;
 
     // Late deduction — stays as separate rule (Option A agreed)
     var lateD=0;
@@ -2110,7 +2120,8 @@ window.renderPayroll=async function(){
 
     const advRecover=Math.min(parseInt(advInput&&advInput.value)||0, totalOutstanding);
     var paidLeaveAmt=Math.round(paidLeaveDays*perDay);
-    const netBeforeAdv=Math.max(0,basePay+otPay+incentive+weeklyOffBonus+woPay+paidLeaveAmt-lateD);
+    var holidayPay=holidayPaid?Math.round(holidayDays*perDay):0;
+    const netBeforeAdv=Math.max(0,basePay+otPay+incentive+weeklyOffBonus+woPay+paidLeaveAmt+holidayPay-lateD);
     const advActual=Math.min(advRecover,netBeforeAdv);
     const net=Math.max(0,netBeforeAdv-advActual);
     const advCarryFwd=totalOutstanding-advActual;
@@ -2155,7 +2166,7 @@ window.renderPayroll=async function(){
     if(woPayRow){
       if(woPaid&&weeklyOffPaidDays>0){
         woPayRow.style.display='flex';
-        R('pb-wopay-lbl','Weekly Off Pay ('+weeklyOffPaidDays+' day'+(weeklyOffPaidDays>1?'s':'')+' × ₹'+perDay+')');
+        R('pb-wopay-lbl','Weekly Off Pay ('+weeklyOffPaidDays+' day'+(weeklyOffPaidDays>1?'s':'')+' × ₹'+perDayR+')');
         R('pb-wopay','+₹'+woPay.toLocaleString('en-IN'));
       } else woPayRow.style.display='none';
     }
@@ -2166,12 +2177,20 @@ window.renderPayroll=async function(){
     var pbAbsentEl=document.getElementById('pb-absent');
     if(pbAbsentEl)pbAbsentEl.style.color='var(--muted)';
 
+    var holRow=document.getElementById('pb-holiday-row');
+    if(holRow){
+      if(holidayPay>0){
+        holRow.style.display='flex';
+        R('pb-holiday-lbl','Holiday Pay ('+holidayDays+' day'+(holidayDays>1?'s':'')+' × ₹'+perDayR+')');
+        R('pb-holiday','+₹'+holidayPay.toLocaleString('en-IN'));
+      } else holRow.style.display='none';
+    }
     // Paid Leave display
     var plRow=document.getElementById('pb-paidleave-row');
     if(plRow){
       if(paidLeaveDays>0){
         plRow.style.display='flex';
-        R('pb-paidleave-lbl','Paid Leave ('+paidLeaveDays+' day'+(paidLeaveDays>1?'s':'')+' × ₹'+perDay+')');
+        R('pb-paidleave-lbl','Paid Leave ('+paidLeaveDays+' day'+(paidLeaveDays>1?'s':'')+' × ₹'+perDayR+')');
         R('pb-paidleave','+₹'+paidLeaveAmt.toLocaleString('en-IN'));
       } else plRow.style.display='none';
     }
@@ -2384,31 +2403,74 @@ async function renderAdvList(){
     var advs=await fbList(p.advances(),orderBy('_createdAt','desc'));
     if(focus)advs=advs.filter(function(a){return a.staffId===focus;});
     if(!advs.length){el.innerHTML=summaryHtml+'<p style="color:var(--muted);font-size:13px;margin-top:10px;">No advance transactions yet</p>';return;}
-    var logHtml='<div style="font-size:12px;font-weight:700;color:var(--muted);margin:12px 0 8px;">'+(focusStaff?ksEsc(focusStaff.name)+'’s Transactions':'All Transactions')+'</div>';
-    (focusStaff?advs:advs.slice(0,30)).forEach(function(a){
-      var st=advStatus[a.id]||{state:'pending',left:a.amount||0};
-      // Only a fully unrecovered advance can be deleted (e.g. entered by mistake);
-      // deleting a recovered one would wrongly reduce what the staff still owes.
-      var statusHtml=st.state==='before'?
-        '<span style="color:var(--muted);font-size:11px;">Before opening</span>':
-        st.state==='settled'?
-        '<span class="status-approved">Settled</span>':
-        st.state==='partial'?
-        '<span style="color:var(--accent);font-size:12px;font-weight:600;">₹'+st.left.toLocaleString('en-IN')+' left</span>':
-        a.opening?
-        '<span style="color:var(--accent);font-size:12px;font-weight:600;">Pending</span>':
-        '<div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--accent);font-size:12px;font-weight:600;">Pending</span>'+
-        '<button class="btn btn-ghost btn-xs" style="color:var(--red);border-color:var(--red);padding:3px 8px;font-size:11px;" onclick="deleteAdvance(\''+a.id+'\',\''+a.staffId+'\','+a.amount+')">🗑️</button></div>';
-      logHtml+='<div class="row"><div class="row-main">'+
-        '<div class="row-title">'+ksEsc(a.staffName)+' · ₹'+(a.amount||0).toLocaleString('en-IN')+(a.opening?' <span style="font-size:10px;color:var(--muted);">(opening balance)</span>':'')+'</div>'+
-        '<div class="row-sub">'+ksEsc(a.date)+(a.note?' · '+ksEsc(a.note):'')+'</div></div>'+statusHtml+'</div>';
+    // Transactions grouped by month (like the Inbox): current month open, older on demand
+    var byMonth={};advMonths=[];
+    advs.slice().sort(function(a,b){return ((b.date||'')+(b.ts||0)).localeCompare((a.date||'')+(a.ts||0));}).forEach(function(a){
+      var key=(a.date||'').slice(0,7)||'0000-00';
+      if(!byMonth[key]){
+        byMonth[key]={key:key,label:key!=='0000-00'?new Date(key+'-01T00:00:00').toLocaleString('en-IN',{month:'long',year:'numeric'}):'Undated',items:[]};
+        advMonths.push(byMonth[key]);
+      }
+      byMonth[key].items.push(a);
     });
+    advMonths.sort(function(a,b){return b.key.localeCompare(a.key);});
+    var nowD=new Date(),curKey=nowD.getFullYear()+'-'+pad(nowD.getMonth()+1);
+    var cutD=new Date(nowD.getFullYear(),nowD.getMonth()-2,1),cutKey=cutD.getFullYear()+'-'+pad(cutD.getMonth()+1);
+    advMonthsShown=Math.max(1,advMonths.filter(function(m){return m.key>=cutKey;}).length);
+    var logHtml='<div style="font-size:12px;font-weight:700;color:var(--muted);margin:12px 0 8px;">'+(focusStaff?ksEsc(focusStaff.name)+'’s Advances':'All Advances')+'</div>'+
+      '<div id="adv-months">'+advMonths.slice(0,advMonthsShown).map(function(m,i){return advMonthHtml(m,i,m.key===curKey);}).join('')+'</div>'+
+      '<div id="adv-older-btn"></div>';
     el.innerHTML=summaryHtml+logHtml;
+    renderAdvOlderBtn();
   }catch(e){el.innerHTML='<p style="color:var(--muted);font-size:13px">Error loading</p>';}
 }
 
 // Advance recovery now handled automatically via ledger on markAsPaid
 var advStatus={};
+var advMonths=[],advMonthsShown=0;
+function advRowHtml(a){
+  var st=advStatus[a.id]||{state:'pending',left:a.amount||0};
+  // Only a fully unrecovered advance can be deleted (e.g. entered by mistake);
+  // deleting a recovered one would wrongly reduce what the staff still owes.
+  var statusHtml=st.state==='before'?
+    '<span style="color:var(--muted);font-size:11px;">Before opening</span>':
+    st.state==='settled'?
+    '<span class="status-approved">Settled</span>':
+    st.state==='partial'?
+    '<span style="color:var(--accent);font-size:12px;font-weight:600;">₹'+st.left.toLocaleString('en-IN')+' left</span>':
+    a.opening?
+    '<span style="color:var(--accent);font-size:12px;font-weight:600;">Pending</span>':
+    '<div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--accent);font-size:12px;font-weight:600;">Pending</span>'+
+    '<button class="btn btn-ghost btn-xs" style="color:var(--red);border-color:var(--red);padding:3px 8px;font-size:11px;" onclick="deleteAdvance(\''+a.id+'\',\''+a.staffId+'\','+a.amount+')">🗑️</button></div>';
+  return '<div class="row"><div class="row-main">'+
+    '<div class="row-title">'+ksEsc(a.staffName)+' · ₹'+(a.amount||0).toLocaleString('en-IN')+(a.opening?' <span style="font-size:10px;color:var(--muted);">(opening balance)</span>':'')+'</div>'+
+    '<div class="row-sub">'+ksEsc(a.date)+(a.note?' · '+ksEsc(a.note):'')+'</div></div>'+statusHtml+'</div>';
+}
+function advMonthHtml(m,i,open){
+  var given=m.items.filter(function(a){return !a.opening;});
+  var tot=given.reduce(function(t,a){return t+(a.amount||0);},0);
+  var op=m.items.filter(function(a){return a.opening;}).length;
+  var meta=given.length+' advance'+(given.length!==1?'s':'')+' · ₹'+tot.toLocaleString('en-IN')+(op?' · opening balance set':'');
+  return '<details class="inbox-month" data-idx="'+i+'"'+(open?' open':'')+' ontoggle="advMonthToggle(this)">'+
+    '<summary><span class="im-title">'+m.label+'</span><span class="im-meta">'+meta+'</span></summary>'+
+    '<div class="im-body" style="padding:4px 14px 6px;">'+(open?m.items.map(advRowHtml).join(''):'')+'</div></details>';
+}
+window.advMonthToggle=function(el){
+  var body=el.querySelector('.im-body');
+  if(el.open&&!body.childElementCount)body.innerHTML=advMonths[+el.dataset.idx].items.map(advRowHtml).join('');
+};
+function renderAdvOlderBtn(){
+  var el=document.getElementById('adv-older-btn');if(!el)return;
+  var left=advMonths.length-advMonthsShown;
+  el.innerHTML=left>0?'<button class="btn btn-ghost" style="margin-top:6px;" onclick="showOlderAdv()">Show older months ('+left+')</button>':'';
+}
+window.showOlderAdv=function(){
+  var box=document.getElementById('adv-months');if(!box)return;
+  var next=advMonths.slice(advMonthsShown,advMonthsShown+3);
+  box.insertAdjacentHTML('beforeend',next.map(function(m,k){return advMonthHtml(m,advMonthsShown+k,false);}).join(''));
+  advMonthsShown+=next.length;
+  renderAdvOlderBtn();
+};
 
 // Payroll staff choice also focuses the advance tracker on that person
 window.syncAdvStaff=function(sid){
@@ -2626,7 +2688,7 @@ window.toggleOTRateMode=function(){
     var base=parseInt(v('ss-base'))||0;
     var stdH=parseFloat(v('ss-stdhours'))||calcAutoStdHours(v('ss-start')||'10:00',v('ss-end')||'21:00');
     var autoRate=stdH>0?Math.round(base/30/stdH):0;
-    document.getElementById('ss-otrate-auto-val').textContent='₹'+autoRate+'/hr';
+    document.getElementById('ss-otrate-auto-val').textContent='about ₹'+autoRate+'/hr (salary ÷ days in month ÷ standard hours)';
   } else {wrap.style.display='none';autoDisp.style.display='none';}
 };
 window.toggleLateRule=function(){
@@ -2675,6 +2737,7 @@ function loadOwnerSettings(){
   document.getElementById('set-punch-time').value=settings.punchInTime||'10:00';
   document.getElementById('set-wo-paid').value=settings.weeklyOffPaid===false?'unpaid':'paid';
   document.getElementById('set-inbox-leave-paid').value=settings.inboxLeavePaid===true?'paid':'unpaid';
+  document.getElementById('set-holiday-paid').value=settings.holidayPaid===false?'unpaid':'paid';
   document.getElementById('mark-date').value=new Date().toISOString().split('T')[0];
   document.getElementById('manual-date').value=new Date().toISOString().split('T')[0];
   const bizIdEl=document.getElementById('biz-id-display');
@@ -2766,8 +2829,9 @@ window.saveBizSettings=async function(){
 window.savePayRules=async function(){
   settings.weeklyOffPaid=v('set-wo-paid')!=='unpaid';
   settings.inboxLeavePaid=v('set-inbox-leave-paid')==='paid';
+  settings.holidayPaid=v('set-holiday-paid')!=='unpaid';
   try{
-    await fbSet(p.settings(),{weeklyOffPaid:settings.weeklyOffPaid,inboxLeavePaid:settings.inboxLeavePaid});
+    await fbSet(p.settings(),{weeklyOffPaid:settings.weeklyOffPaid,inboxLeavePaid:settings.inboxLeavePaid,holidayPaid:settings.holidayPaid});
     ls.set('ap_settings_cache',settings);
     toast('✓ Pay rules saved');
   }catch(e){toast('Error: '+e.message,true);}
@@ -3553,6 +3617,8 @@ window.printSalarySlip=function(){
     if(woffRowVis) html+='<tr><td>'+g('pb-woff-lbl')+'</td><td class="r g">'+g('pb-woff-bonus')+'</td></tr>';
     var woPayRowVis=document.getElementById('pb-wopay-row')&&document.getElementById('pb-wopay-row').style.display!=='none';
     if(woPayRowVis) html+='<tr><td>'+g('pb-wopay-lbl')+'</td><td class="r g">'+g('pb-wopay')+'</td></tr>';
+    var holRowVis=document.getElementById('pb-holiday-row')&&document.getElementById('pb-holiday-row').style.display!=='none';
+    if(holRowVis) html+='<tr><td>'+g('pb-holiday-lbl')+'</td><td class="r g">'+g('pb-holiday')+'</td></tr>';
     var plRowVis=document.getElementById('pb-paidleave-row')&&document.getElementById('pb-paidleave-row').style.display!=='none';
     if(plRowVis) html+='<tr><td>'+g('pb-paidleave-lbl')+'</td><td class="r g">'+g('pb-paidleave')+'</td></tr>';
     html+='<tr><td>'+g('pb-late-lbl')+'</td><td class="r re">'+g('pb-late')+'</td></tr>';
@@ -3675,6 +3741,17 @@ function todayStr(){const d=new Date();return `${d.getFullYear()}-${pad(d.getMon
 function pad(n){return n<10?'0'+n:''+n;}
 function minsToHM(m){if(!m||m<0)return'—';const h=Math.floor(m/60),mn=m%60;return h>0?`${h}h ${mn}m`:`${mn}m`;}
 // Safe selfie thumb — uses data attributes to avoid Safari quote issues
+// Punch-in photo, with the day's last punch-out photo as a small badge
+function selfiePairHtml(rec,name){
+  var ss=rec&&rec.sessions&&rec.sessions.length?rec.sessions:null;
+  var first=ss?ss[0]:rec,last=ss?ss[ss.length-1]:rec;
+  var inSel=first?first.inSelfie:null,inT=first?first.inTime:'';
+  var outSel=last?last.outSelfie:null,outT=last?last.outTime:'';
+  var n=(name||'').replace(/"/g,'');
+  return '<div class="selfie-pair">'+thumbHTML(inSel,name,inT?'Punch-in '+inT:'')+
+    (outSel?'<img class="selfie-out" src="'+outSel+'" data-n="'+n+'" data-t="'+('Punch-out '+(outT||'')).replace(/"/g,'')+'" title="Punch-out photo" onclick="openSelfieModal(this.dataset.n,this.dataset.t,this.src)">':'')+
+  '</div>';
+}
 function thumbHTML(selfie,name,time){
   if(!selfie)return '<div class="selfie-ph">📷</div>';
   const n=(name||'').replace(/"/g,'');
@@ -3689,7 +3766,7 @@ window.openSelfieModal=function(name,time,src){
   if(!modal||!img)return;
   img.src=src;
   nameEl.textContent=name||'';
-  timeEl.textContent=time?'Punched In · '+time:'';
+  timeEl.textContent=time?(/^Punch/.test(time)?time.replace(/^Punch-(in|out) /,function(m,w){return 'Punched '+(w==='in'?'In':'Out')+' · ';}):'Punched In · '+time):'';
   modal.style.display='flex';
 };
 window.closeSelfieModal=function(){
@@ -3998,6 +4075,8 @@ textarea.form-input{resize:none;}
 .pl-dur{margin-left:auto;font-weight:600;color:var(--text);opacity:.8;}
 .pl-total .pl-dur{opacity:1;font-weight:800;}
 .pl-total{font-weight:700;color:var(--text);opacity:.85;}
+.selfie-pair{position:relative;flex-shrink:0;width:40px;height:40px;}
+.selfie-out{position:absolute;right:-6px;bottom:-6px;width:22px;height:22px;border-radius:50%;object-fit:cover;border:2px solid var(--blue);cursor:pointer;background:var(--s2);}
 .selfie-thumb{width:40px;height:40px;border-radius:50%;object-fit:cover;border:2px solid var(--accent);cursor:pointer;flex-shrink:0;}
 .selfie-ph{width:40px;height:40px;border-radius:50%;background:var(--s2);border:2px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;}
 /* stat grid */
@@ -4110,7 +4189,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.21.4</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.22.0</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4436,6 +4515,7 @@ textarea.form-input{resize:none;}
           <div class="pay-row"><span class="pay-row-lbl">Sales Incentive</span><span class="pay-row-val" style="color:var(--green);" id="pb-incentive">+₹0</span></div>
           <div class="pay-row" id="pb-woff-row" style="display:none;"><span class="pay-row-lbl" id="pb-woff-lbl">Weekly Off Worked</span><span class="pay-row-val" style="color:var(--green);" id="pb-woff-bonus">+₹0</span></div>
           <div class="pay-row" id="pb-wopay-row" style="display:none;"><span class="pay-row-lbl" id="pb-wopay-lbl">Weekly Off Pay</span><span class="pay-row-val" style="color:var(--green);" id="pb-wopay">+₹0</span></div>
+          <div class="pay-row" id="pb-holiday-row" style="display:none;"><span class="pay-row-lbl" id="pb-holiday-lbl">Holiday Pay</span><span class="pay-row-val" style="color:var(--green);" id="pb-holiday">+₹0</span></div>
           <div class="pay-row" id="pb-paidleave-row" style="display:none;"><span class="pay-row-lbl" id="pb-paidleave-lbl">Paid Leave</span><span class="pay-row-val" style="color:var(--green);" id="pb-paidleave">+₹0</span></div>
           <div class="pay-section">Deductions</div>
           <div class="pay-row"><span class="pay-row-lbl" id="pb-late-lbl">Late (0 days)</span><span class="pay-row-val" style="color:var(--red);" id="pb-late">−₹0</span></div>
@@ -4523,6 +4603,11 @@ textarea.form-input{resize:none;}
         <div class="form-group"><label class="form-label">Weekly Offs</label>
           <select class="form-input form-select" id="set-wo-paid">
             <option value="paid">Paid — weekly offs count in salary</option>
+            <option value="unpaid">Unpaid</option>
+          </select></div>
+        <div class="form-group"><label class="form-label">Shop Holidays (marked in Settings)</label>
+          <select class="form-input form-select" id="set-holiday-paid">
+            <option value="paid">Paid — holidays count in salary</option>
             <option value="unpaid">Unpaid</option>
           </select></div>
         <div class="form-group"><label class="form-label">Leave Approved from Inbox</label>
@@ -5049,7 +5134,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.21.4</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.22.0</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -5057,11 +5142,25 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.22.0 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.22.0</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Daily rate is now salary ÷ days in that month — full attendance pays exactly the monthly salary in every month (was salary ÷ 30)</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Shop holidays are paid (Settings → Pay Rules can switch this off) — they were previously unpaid</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll for the current month no longer counts today as absent while the day is in progress; future months show nothing</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Punch-out photo shown as a small badge on the punch-in photo (Today and Reports); tap to view</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Advance list grouped by month like the Inbox: current month open, older months on demand</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.21.4 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.21.4</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.21.4</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll breakdown in a clear order: earnings, late deduction, Gross Salary, advance recovered, Net Payable; absent and short hours shown separately as information</span></div>

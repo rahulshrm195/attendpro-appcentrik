@@ -324,6 +324,7 @@ async function payroll(ctx, bizId, month, staffId) {
     ledgerBalance: ledger ? ledger.data.balance || 0 : 0,
     advances: advances.map((a) => a.data),
     weeklyOffPaid: !(sett && sett.data.weeklyOffPaid === false),
+    holidayPaid: !(sett && sett.data.holidayPaid === false),
     incentive: intParam('incentive') || 0,
     advanceRecover: intParam('advanceRecover'),
   });
@@ -354,6 +355,7 @@ async function payrollAll(ctx, bizId, month) {
     ctx.db.get(P.settings(bizId)),
   ]);
   const weeklyOffPaid = !(sett && sett.data.weeklyOffPaid === false);
+  const holidayPaid = !(sett && sett.data.holidayPaid === false);
   const byId = (docs) => Object.fromEntries(docs.map((d) => [d.id, d.data]));
   const cfgMap = byId(cfgs), ledgerMap = byId(ledgers);
   const withRecs = new Set(recs.map((r) => r.data.staffId));
@@ -370,7 +372,7 @@ async function payrollAll(ctx, bizId, month) {
         recs: recMap, marks: markMap,
         ledgerBalance: ledgerMap[s.id] ? ledgerMap[s.id].balance || 0 : 0,
         advances: advances.filter((a) => a.data.staffId === s.id).map((a) => a.data),
-        incentive: 0, advanceRecover: null, weeklyOffPaid,
+        incentive: 0, advanceRecover: null, weeklyOffPaid, holidayPaid,
       }),
     }));
   const total = staff.reduce((t, s) => ({ gross: t.gross + s.pay.gross, net: t.net + s.pay.net,

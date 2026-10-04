@@ -49,18 +49,19 @@ export function computePayroll(a) {
   const dim = new Date(Date.UTC(year, month, 0)).getUTCDate();
   const isCur = year === today.y && month === today.m;
   const isFuture = year > today.y || (year === today.y && month > today.m);
+  const holidayPaid = a.holidayPaid !== false;
   const upto = isFuture ? 0 : isCur ? today.d : dim;
 
   const stdHours = cfg.standardHours || calcAutoStdHoursFromCfg(cfg);
   const stdMins = Math.round(stdHours * 60);
   const minMins = Math.round((cfg.minHours || 1) * 60);
   let otRatePerHour = 0;
-  if (cfg.otRateMode === 'auto') otRatePerHour = stdMins > 0 ? Math.round(cfg.base / 30 / stdHours) : 0;
+  if (cfg.otRateMode === 'auto') otRatePerHour = stdMins > 0 ? Math.round(cfg.base / dim / stdHours) : 0;
   else otRatePerHour = cfg.otRate || 0;
 
   let workDays = 0, present = 0, absent = 0, late = 0, offDays = 0;
   let totalWorkedMins = 0, shortMins = 0, shortDays = 0, otMins = 0;
-  let weeklyOffWorkedMins = 0, weeklyOffWorked = 0, weeklyOffPaidDays = 0, paidLeaveDays = 0;
+  let weeklyOffWorkedMins = 0, weeklyOffWorked = 0, weeklyOffPaidDays = 0, paidLeaveDays = 0, holidayDays = 0;
 
   for (let i = 1; i <= upto; i++) {
     const ds = prefix + '-' + pad(i);
@@ -68,6 +69,11 @@ export function computePayroll(a) {
     const dow = new Date(Date.UTC(year, month - 1, i)).getUTCDay();
     const mark = marks[ds] || marks[ds + '_' + sid];
     const rec = recs[sid + '_' + ds];
+    // Today, still in progress: not counted yet
+    if (isCur && i === today.d) {
+      const open = rec && (rec.sessions && rec.sessions.length ? rec.sessions.some((x) => !x.outTime) : !rec.outTime);
+      if (!rec || open) continue;
+    }
     // eslint-disable-next-line eqeqeq
     if (cfg.weeklyOff >= 0 && dow == cfg.weeklyOff) {
       offDays++;
@@ -89,6 +95,7 @@ export function computePayroll(a) {
       if (!(partLeave && rec && rec.inTime)) {
         offDays++;
         if (mark.type === 'leave' && mark.paidLeave) paidLeaveDays++;
+        if (mark.type === 'holiday') holidayDays++;
         continue;
       }
       if (mark.paidLeave && mark.leaveType === 'half') paidLeaveDays += 0.5;
@@ -118,20 +125,21 @@ export function computePayroll(a) {
     }
   }
 
-  const perDay = Math.round(cfg.base / 30);
+  // Daily rate = salary ÷ days in this month
+  const perDay = cfg.base / dim;
   let eligibleDays = upto;
   if (joiningDate && joiningDate.startsWith(prefix)) {
     const joinDay = parseInt(joiningDate.split('-')[2]) || 1;
     eligibleDays = upto - joinDay + 1;
   }
   let basePay = stdMins > 0 ? Math.round((totalWorkedMins / stdMins) * perDay) : 0;
-  const maxPay = eligibleDays < upto ? perDay * eligibleDays : cfg.base;
+  const maxPay = eligibleDays < upto ? Math.round(perDay * eligibleDays) : cfg.base;
   basePay = Math.min(basePay, maxPay);
 
   const otPay = Math.round((otMins / 60) * otRatePerHour);
   const weeklyOffBonus = stdMins > 0 ? Math.round((weeklyOffWorkedMins / stdMins) * perDay) : 0;
   // Business rule (settings.weeklyOffPaid); paid unless turned off
-  const woPay = a.weeklyOffPaid !== false ? weeklyOffPaidDays * perDay : 0;
+  const woPay = a.weeklyOffPaid !== false ? Math.round(weeklyOffPaidDays * perDay) : 0;
   let lateD = 0;
   if (cfg.lateRule === 'fixed') lateD = late * (cfg.lateAmount || 0);
   else if (cfg.lateRule === 'halfday') lateD = Math.floor(late / (cfg.lateHalfAfter || 3)) * Math.round(perDay / 2);
@@ -145,17 +153,18 @@ export function computePayroll(a) {
   const advRecover = Math.min(a.advanceRecover != null ? a.advanceRecover : defaultRecover, totalOutstanding);
 
   const paidLeaveAmt = Math.round(paidLeaveDays * perDay);
-  const gross = Math.max(0, basePay + otPay + incentive + weeklyOffBonus + woPay + paidLeaveAmt - lateD);
+  const holidayPay = holidayPaid ? Math.round(holidayDays * perDay) : 0;
+  const gross = Math.max(0, basePay + otPay + incentive + weeklyOffBonus + woPay + paidLeaveAmt + holidayPay - lateD);
   const advActual = Math.min(advRecover, gross);
   const net = Math.max(0, gross - advActual);
 
   return {
     month: prefix,
     daysCounted: upto,
-    attendance: { workDays, present, absent, late, offDays, weeklyOffDays: weeklyOffPaidDays,
+    attendance: { workDays, present, absent, late, offDays, weeklyOffDays: weeklyOffPaidDays, holidays: holidayDays,
       weeklyOffWorked, paidLeaveDays, shortDays, shortMins, otMins, baseWorkedMins: totalWorkedMins },
-    rates: { base: cfg.base, perDay, standardHours: stdHours, otRatePerHour },
-    pay: { basePay, otPay, incentive, weeklyOffBonus, weeklyOffPay: woPay, paidLeave: paidLeaveAmt,
+    rates: { base: cfg.base, perDay: Math.round(perDay), standardHours: stdHours, otRatePerHour },
+    pay: { basePay, otPay, incentive, weeklyOffBonus, weeklyOffPay: woPay, holidayPay, paidLeave: paidLeaveAmt,
       lateDeduction: lateD, gross, advanceRecovered: advActual, net },
     advances: { outstanding: totalOutstanding, thisMonth: thisMonthTotal, carriedIn: carryForwardIn,
       carryForwardAfter: totalOutstanding - advActual },
