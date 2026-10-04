@@ -45,6 +45,18 @@ const db   = getFirestore(app);
 //  Swap localStorage ↔ Firestore here only.
 // ─────────────────────────────────────────────
 
+// App version — shown beside the name in every top bar. Bump with each release
+// (together with the What's New entry and CACHE_NAME in sw.js).
+const APP_VERSION = 'v1.22.2';
+function showAppVersion(){
+  document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
+    var nx=el.nextElementSibling;
+    if(nx&&nx.classList.contains('ver-chip'))return;
+    el.insertAdjacentHTML('afterend','<span class="ver-chip">'+APP_VERSION+'</span>');
+  });
+}
+showAppVersion();
+
 let BIZ_ID = localStorage.getItem('ap_biz_id') || null;
 
 // LocalStorage fallback (used for session + config only)
@@ -1512,6 +1524,13 @@ window.inboxMonthToggle=function(el){
     body.innerHTML=m.items.map(function(r){return reqCardHtml(r,true);}).join('');
   }
 };
+// When a request was approved/rejected (en-IN "d/m/yyyy" for older records); falls back to request time
+function reqDecidedTs(r){
+  if(r.actionTs)return r.actionTs;
+  var m=/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(r.actionDate||'');
+  if(m)return new Date(+m[3],+m[2]-1,+m[1],12).getTime();
+  return r.ts||0;
+}
 async function renderInbox(){
   setLoading(true,'Loading requests…');
   try{
@@ -1520,8 +1539,11 @@ async function renderInbox(){
     const curKey=now.getFullYear()+'-'+pad(now.getMonth()+1);
     const pending=reqs.filter(r=>r.status==='pending');
     const byMonth={};inboxMonths=[];
-    reqs.filter(r=>r.status!=='pending').forEach(function(r){
-      const d=r.ts?new Date(r.ts):null;
+    reqs.filter(r=>r.status!=='pending')
+      .sort(function(a,b){return reqDecidedTs(b)-reqDecidedTs(a);})
+      .forEach(function(r){
+      const dts=reqDecidedTs(r);
+      const d=dts?new Date(dts):null;
       const key=d?d.getFullYear()+'-'+pad(d.getMonth()+1):'0000-00';
       if(!byMonth[key]){
         byMonth[key]={key:key,label:d?d.toLocaleString('en-IN',{month:'long',year:'numeric'}):'Undated',items:[]};
@@ -1588,7 +1610,7 @@ window.approveReq=async function(id){
   try{
     const all=await fbList(p.requests(),where('ts','>',0));
     const r=all.find(x=>x.id===id);if(!r){setLoading(false);return;}
-    await updateDoc(doc(db,p.reqDoc(id)),{status:'approved',actionDate:new Date().toLocaleDateString('en-IN')});
+    await updateDoc(doc(db,p.reqDoc(id)),{status:'approved',actionDate:new Date().toLocaleDateString('en-IN'),actionTs:Date.now()});
     if(r.type==='advance'){
       await fbAdd(p.advances(),{staffId:r.staffId,staffName:r.staffName,amount:r.amount,date:new Date().toISOString().split('T')[0],note:'Approved: '+r.reason,recovered:false,countedInLedger:true,fromRequest:id,ts:Date.now()});
       // Update ledger balance
@@ -1616,7 +1638,7 @@ window.rejectReq=async function(id){
   const note=prompt('Reason for rejection (optional):');
   setLoading(true,'Rejecting…');
   try{
-    await updateDoc(doc(db,p.reqDoc(id)),{status:'rejected',ownerNote:note||'',actionDate:new Date().toLocaleDateString('en-IN')});
+    await updateDoc(doc(db,p.reqDoc(id)),{status:'rejected',ownerNote:note||'',actionDate:new Date().toLocaleDateString('en-IN'),actionTs:Date.now()});
     toast('Rejected');renderInbox();updateInboxBadge();
   }catch(e){toast('Error: '+e.message,true);}
   setLoading(false);
@@ -1877,20 +1899,30 @@ async function populatePayrollDropdowns(){
     if(cur)el.value=cur;
   });
   const pm=document.getElementById('pay-month');
-  if(pm&&!pm.value){var n=new Date();pm.value=n.getFullYear()+'-'+pad(n.getMonth()+1);}
+  if(pm&&!pm.value)pm.value=prevMonthKey();
   updatePayMonthDisplay();
   const ad=document.getElementById('adv-date');
   if(ad&&!ad.value)ad.value=new Date().toISOString().split('T')[0];
 }
 
+// Payroll opens on last month (the one normally being paid)
+function prevMonthKey(){var n=new Date();var d=new Date(n.getFullYear(),n.getMonth()-1,1);return d.getFullYear()+'-'+pad(d.getMonth()+1);}
+function curMonthKey(){var n=new Date();return n.getFullYear()+'-'+pad(n.getMonth()+1);}
 function updatePayMonthDisplay(){
   var pm=document.getElementById('pay-month');
   var disp=document.getElementById('pay-month-display');
   if(!pm||!disp)return;
-  if(!pm.value){var n=new Date();pm.value=n.getFullYear()+'-'+pad(n.getMonth()+1);}
+  if(!pm.value)pm.value=prevMonthKey();
   var parts=pm.value.split('-');
   var d=new Date(parseInt(parts[0]),parseInt(parts[1])-1,1);
   disp.textContent=d.toLocaleString('default',{month:'long',year:'numeric'});
+  var badge=document.getElementById('pay-month-badge');
+  if(badge){
+    var cur=curMonthKey();
+    if(pm.value===cur){badge.style.display='block';badge.className='pay-month-badge cur';badge.textContent='● Current month — still in progress, salary not final';}
+    else if(pm.value>cur){badge.style.display='block';badge.className='pay-month-badge fut';badge.textContent='● Future month — no attendance yet';}
+    else badge.style.display='none';
+  }
 }
 window.changePayMonth=function(dir){
   var pm=document.getElementById('pay-month');
@@ -4072,6 +4104,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--fb);min-height:100
 .top-bar{position:sticky;top:0;z-index:50;background:var(--topbar-bg);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:13px 20px;display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .tb-title{font-family:var(--fh);font-size:15px;font-weight:700;}
 .tb-sub{font-size:11px;color:var(--muted);margin-top:1px;}
+.tb-title{display:inline-block;vertical-align:middle;}
+.ver-chip{display:inline-block;vertical-align:middle;margin-left:6px;font-size:10px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.12);border:1px solid rgba(245,166,35,.3);border-radius:8px;padding:1px 6px;line-height:1.5;}
 /* tabs */
 .tabs{display:flex;gap:6px;padding:14px 16px 0;overflow-x:auto;scrollbar-width:none;}
 .tabs::-webkit-scrollbar{display:none;}
@@ -4212,6 +4246,9 @@ textarea.form-input{resize:none;}
 .req-card-title{font-weight:700;font-size:13px;}
 .req-card-meta{font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.5;}
 .req-card-actions{display:flex;gap:8px;}
+.pay-month-badge{margin-top:10px;font-size:12px;font-weight:700;border-radius:10px;padding:8px 12px;}
+.pay-month-badge.cur{color:var(--accent);background:rgba(245,166,35,.12);border:1px solid rgba(245,166,35,.35);}
+.pay-month-badge.fut{color:var(--muted);background:var(--s2);border:1px solid var(--border);}
 .pay-info .pay-row-lbl,.pay-info .pay-row-val{color:var(--muted)!important;font-size:12px;font-weight:500;}
 .inbox-month{margin-bottom:10px;border:1px solid var(--border);border-radius:var(--r);background:var(--s1);overflow:hidden;}
 .inbox-month>summary{list-style:none;cursor:pointer;padding:14px 16px;display:flex;flex-direction:column;gap:3px;position:relative;padding-right:40px;}
@@ -4267,7 +4304,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.22.1</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.22.2</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4577,6 +4614,7 @@ textarea.form-input{resize:none;}
               <input type="month" id="pay-month" style="position:absolute;opacity:0;pointer-events:none;width:1px;height:1px;">
             </div></div>
         </div>
+        <div id="pay-month-badge" class="pay-month-badge" style="display:none;"></div>
       </div>
       <div id="payroll-output" style="display:none;">
         <div class="pay-hero">
@@ -4836,7 +4874,7 @@ textarea.form-input{resize:none;}
 ══════════════════════════════════ -->
 <div class="screen" id="screen-kiosk">
   <div style="padding:12px 16px 0;display:flex;align-items:center;justify-content:space-between;">
-    <div style="font-family:var(--fh);font-weight:800;font-size:16px;color:var(--accent);">AttendPro Kiosk</div>
+    <div><div class="kiosk-title" style="display:inline-block;font-family:var(--fh);font-weight:800;font-size:16px;color:var(--accent);">AttendPro Kiosk</div></div>
     <div id="kiosk-biz-name" style="font-size:12px;color:var(--muted);"></div>
   </div>
   <!-- Exit kiosk — discreet, PIN protected -->
@@ -5230,7 +5268,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.22.1</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.22.2</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -5238,11 +5276,23 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.22.2 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.22.2</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Version number shown beside the name at the top of every screen (owner, staff, shop phone)</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll opens on last month; a badge shows when the current (unfinished) month is selected</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Inbox files approved and rejected requests by approval date — matches the advance tracker (e.g. asked 30 Sep, approved 1 Oct → October)</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.22.1 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.22.1</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.22.1</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Settings → 🎉 Shop Holidays: see the whole year's holidays, add one at a time or paste a full list (one per line, e.g. "20-10-2026 Diwali")</span></div>
