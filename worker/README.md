@@ -48,6 +48,30 @@ To rotate the key: run `wrangler secret put API_KEY` again with a new value.
 `TZ_OFFSET` in `wrangler.toml` (default `+05:30`) is the business time zone used
 for "today", late checks and times you send to the API.
 
+## Salary day: reconcile a month
+
+```bash
+cd worker
+export API_URL=https://attendpro-api.<you>.workers.dev
+export API_KEY=<your key>
+
+node scripts/report.mjs SRS 2026-09 --csv salary-2026-09.csv
+```
+
+Use the company code (or business ID) and the month. The script only reads
+data. It prints:
+
+1. **Attendance problems:** each flagged day, its sessions and a ready-to-run
+   `curl` command to fix it. For a double tap, the command deletes the extra
+   session; for a wrong or missing time, fill in the real `HH:MM` before
+   running it.
+2. **Salary table:** for every staff member, with the totals. Staff whose
+   salary isn't set up in the app are marked `⚠ salary not set`.
+
+Fix the problems, run the report again until it shows none, then pay from the
+salary table (or the CSV). For an incentive or a different advance amount for
+one person, use the single-staff payroll call shown at the end of the report.
+
 ## Endpoints
 
 Every request except `/health` needs `Authorization: Bearer <API_KEY>`.
@@ -64,7 +88,8 @@ passwords, PINs or selfie images.
 | GET | `/biz/{bizId}/attendance/{YYYY-MM-DD}/{staffId}` | One day's record |
 | PATCH | `/biz/{bizId}/attendance/{YYYY-MM-DD}/{staffId}` | Edit or add a session |
 | DELETE | `/biz/{bizId}/attendance/{YYYY-MM-DD}/{staffId}/session/{index}` | Remove a session |
-| GET | `/biz/{bizId}/payroll/{YYYY-MM}/{staffId}` | Payroll calculation |
+| GET | `/biz/{bizId}/payroll/{YYYY-MM}` | Payroll for all staff (app defaults) |
+| GET | `/biz/{bizId}/payroll/{YYYY-MM}/{staffId}` | Payroll for one person |
 | POST | `/biz/{bizId}/advance` | Give an advance |
 
 ### Add staff

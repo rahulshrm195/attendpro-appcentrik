@@ -46,6 +46,7 @@ const routes = [
   ['GET', `^/biz/${ID}/attendance/(\\d{4}-\\d{2}-\\d{2})/${ID}$`, getRecord],
   ['PATCH', `^/biz/${ID}/attendance/(\\d{4}-\\d{2}-\\d{2})/${ID}$`, editSession],
   ['DELETE', `^/biz/${ID}/attendance/(\\d{4}-\\d{2}-\\d{2})/${ID}/session/(\\d+)$`, deleteSession],
+  ['GET', `^/biz/${ID}/payroll/(\\d{4}-\\d{2})$`, payrollAll],
   ['GET', `^/biz/${ID}/payroll/(\\d{4}-\\d{2})/${ID}$`, payroll],
   ['POST', `^/biz/${ID}/advance$`, giveAdvance],
 ].map(([m, re, fn]) => [m, new RegExp(re), fn]);
@@ -314,21 +315,63 @@ async function payroll(ctx, bizId, month, staffId) {
     ctx.db.get(P.advLedger(bizId, staffId)),
     ctx.db.list(P.advances(bizId), [['staffId', '==', staffId]]),
   ]);
-  const recMap = {};
-  for (const r of recs) recMap[r.data.staffId + '_' + r.data.date] = r.data;
-  const markMap = {};
-  for (const d of marks) markMap[d.data.date + (d.data.staffId ? '_' + d.data.staffId : '')] = d.data;
   const result = computePayroll({
     cfg: cfgDoc ? cfgDoc.data : defaultSalaryCfg(),
     staff, sid: staffId, year: y, month: m,
     today: localParts(new Date(), ctx.tz),
-    recs: recMap, marks: markMap,
+    recs: recMapOf(recs), marks: markMapOf(marks),
     ledgerBalance: ledger ? ledger.data.balance || 0 : 0,
     advances: advances.map((a) => a.data),
     incentive: intParam('incentive') || 0,
     advanceRecover: intParam('advanceRecover'),
   });
   return json({ staffId, staffName: staff.name, salaryConfigured: !!cfgDoc, ...result });
+}
+
+function recMapOf(recs) {
+  const m = {};
+  for (const r of recs) m[r.data.staffId + '_' + r.data.date] = r.data;
+  return m;
+}
+function markMapOf(marks) {
+  const m = {};
+  for (const d of marks) m[d.data.date + (d.data.staffId ? '_' + d.data.staffId : '')] = d.data;
+  return m;
+}
+
+/** Payroll for every active staff member (and anyone with attendance that month), with app defaults. */
+async function payrollAll(ctx, bizId, month) {
+  const { y, m, from, to } = monthRange(month);
+  const [staffDocs, cfgs, recs, marks, ledgers, advances] = await Promise.all([
+    ctx.db.list(P.staff(bizId)),
+    ctx.db.list(`businesses/${bizId}/salary_config`),
+    ctx.db.list(P.recs(bizId), [['date', '>=', from], ['date', '<=', to]]),
+    ctx.db.list(P.days(bizId), [['date', '>=', from], ['date', '<=', to]]),
+    ctx.db.list(`businesses/${bizId}/advance_ledger`),
+    ctx.db.list(P.advances(bizId)),
+  ]);
+  const byId = (docs) => Object.fromEntries(docs.map((d) => [d.id, d.data]));
+  const cfgMap = byId(cfgs), ledgerMap = byId(ledgers);
+  const withRecs = new Set(recs.map((r) => r.data.staffId));
+  const recMap = recMapOf(recs), markMap = markMapOf(marks);
+  const today = localParts(new Date(), ctx.tz);
+  const staff = staffDocs
+    .filter((s) => s.data.active || withRecs.has(s.id))
+    .sort((a, b) => String(a.data.name).localeCompare(String(b.data.name)))
+    .map((s) => ({
+      staffId: s.id, staffName: s.data.name, active: !!s.data.active, salaryConfigured: !!cfgMap[s.id],
+      ...computePayroll({
+        cfg: cfgMap[s.id] || defaultSalaryCfg(),
+        staff: s.data, sid: s.id, year: y, month: m, today,
+        recs: recMap, marks: markMap,
+        ledgerBalance: ledgerMap[s.id] ? ledgerMap[s.id].balance || 0 : 0,
+        advances: advances.filter((a) => a.data.staffId === s.id).map((a) => a.data),
+        incentive: 0, advanceRecover: null,
+      }),
+    }));
+  const total = staff.reduce((t, s) => ({ gross: t.gross + s.pay.gross, net: t.net + s.pay.net,
+    advanceRecovered: t.advanceRecovered + s.pay.advanceRecovered }), { gross: 0, net: 0, advanceRecovered: 0 });
+  return json({ month, total, staff });
 }
 
 async function giveAdvance(ctx, bizId) {

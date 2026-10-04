@@ -1,6 +1,9 @@
 // Integration tests: the Worker's fetch handler against the Firestore emulator.
 // Run with `npm test` (starts the emulator automatically).
 import { test, before } from 'node:test';
+import { createServer } from 'node:http';
+import { execFile } from 'node:child_process';
+import { readFileSync, rmSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import worker from '../src/index.js';
 import { createFirestore } from '../src/firestore.js';
@@ -214,6 +217,42 @@ test('payroll matches the app rules', async () => {
   assert.equal(r2.body.pay.net, 1250);
   assert.equal((await call('GET', '/biz/B1/payroll/2026-09/S1?incentive=-5')).status, 400);
   assert.equal((await call('GET', '/biz/B1/payroll/2026-09/NOBODY')).status, 404);
+});
+
+test('payroll for all staff matches the single-staff numbers', async () => {
+  const { status, body } = await call('GET', '/biz/B1/payroll/2026-09');
+  assert.equal(status, 200);
+  const ravi = body.staff.find((x) => x.staffId === 'S1');
+  assert.equal(ravi.pay.net, 3050);
+  assert.equal(ravi.salaryConfigured, true);
+  const amit = body.staff.find((x) => x.staffId === 'S2');
+  assert.equal(amit.salaryConfigured, false);
+  assert.equal(body.total.net, body.staff.reduce((t, x) => t + x.pay.net, 0));
+  assert.deepEqual(body.staff.map((x) => x.staffName), [...body.staff.map((x) => x.staffName)].sort());
+});
+
+test('report script prints problems with fix commands and a salary sheet', async () => {
+  const server = createServer(async (req, res) => {
+    const r = await worker.fetch(new Request('http://x' + req.url, { method: req.method, headers: req.headers }), env);
+    res.writeHead(r.status, { 'Content-Type': 'application/json' });
+    res.end(await r.text());
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const csv = '/tmp/attendpro-report-test.csv';
+  const out = await new Promise((resolve, reject) => execFile(process.execPath,
+    [new URL('../scripts/report.mjs', import.meta.url).pathname, 'srs', '2026-08', '--csv', csv],
+    { env: { ...process.env, API_URL: url, API_KEY: KEY } },
+    (err, stdout, stderr) => (err ? reject(new Error(stderr || err.message)) : resolve(stdout))));
+  server.close();
+  assert.match(out, /SR Shoes — 2026-08/);
+  assert.match(out, /Session 1 lasted under 2 min/);
+  assert.match(out, /curl -X DELETE .*\/attendance\/2026-08-11\/S1\/session\/0/);
+  assert.match(out, /TOTAL/);
+  assert.ok(!out.includes(KEY), 'API key never printed');
+  const sheet = readFileSync(csv, 'utf8');
+  assert.match(sheet.split('\n')[0], /^Name,Staff ID,Present/);
+  rmSync(csv);
 });
 
 test('POST advance writes advance, ledger and log together', async () => {
