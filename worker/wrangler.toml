@@ -1,0 +1,12 @@
+name = "attendpro-api"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+FIREBASE_PROJECT_ID = "attendpro-543ad"
+# Business time zone (India). Used for "today", late checks and edited punch times.
+TZ_OFFSET = "+05:30"
+
+# Secrets — set with `npx wrangler secret put <NAME>`, never commit them:
+#   API_KEY                   at least 32 random characters
+#   FIREBASE_SERVICE_ACCOUNT  the full JSON of a Firebase service account key
