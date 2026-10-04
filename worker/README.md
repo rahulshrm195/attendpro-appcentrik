@@ -8,45 +8,45 @@ talks to Firestore with a Google service account.
 > attendance, staff and advances. Keep it on servers and scripts only — never
 > put it in `index.html`, a staff phone, or a chat message.
 
-## One-time setup
+## One-time setup (no terminal needed)
 
-1. **Firebase service account key**
-   Firebase console → Project settings → Service accounts → *Generate new
-   private key*. A JSON file downloads. Keep it private; don't commit it.
+You need a Firebase service account key and a free Cloudflare account. Menu
+names on these sites change from time to time; if something is named slightly
+differently, look for the closest match.
 
-2. **Cloudflare**
-   ```bash
-   cd worker
-   npm install
-   npx wrangler login
-   ```
+1. **Firebase key** — Firebase console → ⚙️ Project settings → **Service
+   accounts** → **Generate new private key**. A `.json` file downloads. Keep it
+   private (it gives full access to the database).
+2. **API key for the agent** — make a random password of at least 32
+   characters (any password manager can generate one). Save it; this is what
+   your agent will use.
+3. **Cloudflare** — sign in at dash.cloudflare.com → **Workers & Pages** →
+   **Create** → **Import a repository** → connect GitHub and pick
+   `attendpro-appcentrik`. Set **Root directory** to `worker` and deploy.
+4. **Secrets** — open the new Worker → **Settings → Variables and Secrets** →
+   add two **Secrets**:
+   - `API_KEY` = the password from step 2
+   - `FIREBASE_SERVICE_ACCOUNT` = paste the whole contents of the `.json` file
+   Then redeploy (Deployments → ⋯ → Redeploy).
+5. **Check** — open `https://<your-worker>.workers.dev/health` in a browser. It
+   should say `{"ok": true}`.
 
-3. **Secrets**
-   ```bash
-   # 1) A strong random API key (save it in your password manager)
-   openssl rand -hex 32
-   npx wrangler secret put API_KEY                    # paste the key
+To change the key later, edit the `API_KEY` secret and redeploy. Every future
+push to `main` redeploys the Worker automatically.
 
-   # 2) The service account JSON from step 1
-   npx wrangler secret put FIREBASE_SERVICE_ACCOUNT < path/to/service-account.json
-   ```
+<details><summary>Same setup from a terminal</summary>
 
-4. **Deploy**
-   ```bash
-   npx wrangler deploy
-   ```
-   Wrangler prints the URL, e.g. `https://attendpro-api.<you>.workers.dev`.
+```bash
+cd worker && npm install && npx wrangler login
+npx wrangler secret put API_KEY
+npx wrangler secret put FIREBASE_SERVICE_ACCOUNT < service-account.json
+npx wrangler deploy
+```
+</details>
 
-5. **Check it**
-   ```bash
-   curl https://attendpro-api.<you>.workers.dev/health
-   curl -H "Authorization: Bearer $API_KEY" https://attendpro-api.<you>.workers.dev/biz/list
-   ```
+`TZ_OFFSET` in `wrangler.toml` (default `+05:30`) is the business time zone.
 
-To rotate the key: run `wrangler secret put API_KEY` again with a new value.
-
-`TZ_OFFSET` in `wrangler.toml` (default `+05:30`) is the business time zone used
-for "today", late checks and times you send to the API.
+For automating month end with an AI agent, see **[AGENT.md](AGENT.md)**.
 
 ## Salary day: reconcile a month
 
@@ -88,8 +88,12 @@ passwords, PINs or selfie images.
 | GET | `/biz/{bizId}/attendance/{YYYY-MM-DD}/{staffId}` | One day's record |
 | PATCH | `/biz/{bizId}/attendance/{YYYY-MM-DD}/{staffId}` | Edit or add a session |
 | DELETE | `/biz/{bizId}/attendance/{YYYY-MM-DD}/{staffId}/session/{index}` | Remove a session |
-| GET | `/biz/{bizId}/payroll/{YYYY-MM}` | Payroll for all staff (app defaults) |
+| POST | `/biz/{bizId}/attendance/{YYYY-MM}/autofix` | Remove clear double taps (`{"dryRun":true}` to preview) |
+| GET | `/biz/{bizId}/payroll/{YYYY-MM}` | Payroll for all staff |
 | GET | `/biz/{bizId}/payroll/{YYYY-MM}/{staffId}` | Payroll for one person |
+| GET | `/biz/{bizId}/payroll/{YYYY-MM}/{staffId}/slip` | Salary slip (HTML page) |
+| GET | `/biz/{bizId}/payroll/{YYYY-MM}/slips` | All salary slips in one printable page |
+| POST | `/biz/{bizId}/monthend/{YYYY-MM}` | Month end in one call: auto-fix + needs-review list + payroll + slip links |
 | POST | `/biz/{bizId}/advance` | Give an advance |
 
 ### Add staff

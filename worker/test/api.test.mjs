@@ -77,6 +77,24 @@ before(async () => {
   ]);
 });
 
+test.before(async () => {
+  // July 2026 data for auto-fix / month-end (Amit, no weekly off, 10:00–19:00)
+  const jul = (d) => '2026-07-' + String(d).padStart(2, '0');
+  await db.commit([
+    { set: `${B}/salary_config/S2`, data: { base: 31000, weeklyOff: -1, startTime: '10:00', endTime: '19:00', standardHours: 9,
+      minHours: 1, otRateMode: 'none', otRate: 0, lateRule: 'fixed', lateAmount: 0 } },
+    // double tap: open session + same-minute session with punch-out
+    { set: `${B}/attendance/S2_${jul(6)}`, data: rec('S2', jul(6), [sess(jul(6), '10:31', '13:00'), sess(jul(6), '14:05', null), sess(jul(6), '14:05', '21:58')]) },
+    // triple tap
+    { set: `${B}/attendance/S2_${jul(7)}`, data: rec('S2', jul(7), [sess(jul(7), '11:24', null), sess(jul(7), '11:24', null), sess(jul(7), '11:24', '21:36')]) },
+    // unclear: two different punch-outs → left for a person
+    { set: `${B}/attendance/S2_${jul(8)}`, data: rec('S2', jul(8), [sess(jul(8), '10:00', '13:00'), sess(jul(8), '10:01', '19:00')]) },
+    // 22-minute day → needs a check
+    { set: `${B}/attendance/S2_${jul(9)}`, data: rec('S2', jul(9), [sess(jul(9), '21:13', '21:35')]) },
+    { set: `${B}/payments/S2_2026-07`, data: { staffId: 'S2', month: '2026-07', net: '₹100', mode: 'upi', date: '1/8/2026', incentive: 250, advRecovered: 0 } },
+  ]);
+});
+
 test('auth and routing', async () => {
   assert.equal((await call('GET', '/health', null, null)).status, 200);
   assert.equal((await call('GET', '/biz/list', null, null)).status, 401);
@@ -124,7 +142,7 @@ test('attendance month: flags anomalies, strips selfies', async () => {
   assert.equal(body.summary.records, 5);
   const codes = (date, sid = 'S1') => body.records.find((r) => r.date === date && r.staffId === sid).flags.map((f) => f.code);
   assert.deepEqual(codes('2026-08-10'), ['duplicate_session']);
-  assert.deepEqual(codes('2026-08-11'), ['tiny_session']);
+  assert.deepEqual(codes('2026-08-11'), ['tiny_session', 'short_day']);
   assert.deepEqual(codes('2026-08-12'), ['missing_punch_out']);
   assert.deepEqual(codes('2026-08-13'), ['overlapping_sessions']);
   assert.deepEqual(codes('2026-08-10', 'S2'), []);
@@ -250,8 +268,8 @@ test('payroll for all staff matches the single-staff numbers', async () => {
   const ravi = body.staff.find((x) => x.staffId === 'S1');
   assert.equal(ravi.pay.net, 8050);
   assert.equal(ravi.salaryConfigured, true);
-  const amit = body.staff.find((x) => x.staffId === 'S2');
-  assert.equal(amit.salaryConfigured, false);
+  const neha = body.staff.find((x) => x.staffName === 'Neha');
+  assert.equal(neha.salaryConfigured, false);
   assert.equal(body.total.net, body.staff.reduce((t, x) => t + x.pay.net, 0));
   assert.deepEqual(body.staff.map((x) => x.staffName), [...body.staff.map((x) => x.staffName)].sort());
 });
@@ -297,4 +315,67 @@ test('POST advance writes advance, ledger and log together', async () => {
   const r2 = await call('POST', '/biz/B1/advance', { staffId: 'S2', amount: 700 });
   assert.equal(r2.status, 201);
   assert.equal((await db.get(`${B}/advance_ledger/S2`)).data.balance, 700);
+});
+
+test('auto-fix: preview changes nothing, apply fixes clear double taps only', async () => {
+  let r = await call('POST', '/biz/B1/attendance/2026-07/autofix', { dryRun: true, staffId: 'S2' });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.summary.daysFixed, 2);
+  assert.equal(r.body.summary.sessionsRemoved, 3);
+  assert.equal((await db.get(`${B}/attendance/S2_2026-07-06`)).data.sessions.length, 3, 'dry run wrote nothing');
+  r = await call('POST', '/biz/B1/attendance/2026-07/autofix', { staffId: 'S2' });
+  assert.equal(r.body.summary.daysFixed, 2);
+  const d6 = (await db.get(`${B}/attendance/S2_2026-07-06`)).data;
+  assert.deepEqual(d6.sessions.map((x) => x.inTime + '-' + x.outTime), ['10:31-13:00', '14:05-21:58']);
+  assert.equal(d6.workedMins, 149 + 473);
+  assert.equal(d6.removedDuplicates.length, 1);
+  assert.equal((await db.get(`${B}/attendance/S2_2026-07-07`)).data.sessions.length, 1);
+  assert.equal((await db.get(`${B}/attendance/S2_2026-07-08`)).data.sessions.length, 2, 'unclear day untouched');
+  const codes = r.body.needsReview.map((x) => x.date + ':' + x.flags.map((f) => f.code).join(','));
+  assert.ok(codes.includes('2026-07-08:duplicate_session'), codes.join(' | '));
+  assert.ok(codes.some((c) => c.startsWith('2026-07-09:') && c.includes('short_day') && c.includes('late_start')), codes.join(' | '));
+  r = await call('POST', '/biz/B1/attendance/2026-07/autofix', { staffId: 'S2' });
+  assert.equal(r.body.summary.daysFixed, 0, 'second run has nothing left to fix');
+});
+
+test('paid month payroll uses the saved payment (incentive)', async () => {
+  const { body } = await call('GET', '/biz/B1/payroll/2026-07/S2');
+  assert.equal(body.payment.paid, true);
+  assert.equal(body.payment.mode, 'upi');
+  assert.equal(body.pay.incentive, 250);
+});
+
+test('salary slips: one staff and all staff, as HTML', async () => {
+  let res = await worker.fetch(new Request('https://api.test/biz/B1/payroll/2026-09/S1/slip', { headers: { Authorization: 'Bearer ' + KEY } }), env);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type'), /text\/html/);
+  let page = await res.text();
+  assert.match(page, /Salary Slip/);
+  assert.match(page, /Ravi/);
+  assert.match(page, /Net Payable/);
+  assert.match(page, /Holiday Pay \(1 day\)/);
+  assert.ok(!page.includes('Amit'));
+  res = await worker.fetch(new Request('https://api.test/biz/B1/payroll/2026-09/slips', { headers: { Authorization: 'Bearer ' + KEY } }), env);
+  page = await res.text();
+  assert.ok(page.includes('Ravi') && page.includes('Amit'), 'all staff in one document');
+  assert.ok((page.match(/class="slip"/g) || []).length >= 2);
+  res = await worker.fetch(new Request('https://api.test/biz/B1/payroll/2026-09/slips'), env);
+  assert.equal(res.status, 401, 'slips need the key');
+});
+
+test('month end: preview, then apply', async () => {
+  await db.commit([{ set: `${B}/attendance/S1_2026-06-15`, data: rec('S1', '2026-06-15', [sess('2026-06-15', '10:00', null), sess('2026-06-15', '10:00', '19:00')]) }]);
+  let r = await call('POST', '/biz/B1/monthend/2026-06', { apply: false });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.applied, false);
+  assert.equal(r.body.autofix.summary.daysFixed, 1);
+  assert.equal((await db.get(`${B}/attendance/S1_2026-06-15`)).data.sessions.length, 2, 'preview wrote nothing');
+  r = await call('POST', '/biz/B1/monthend/2026-06', {});
+  assert.equal(r.body.applied, true);
+  assert.equal((await db.get(`${B}/attendance/S1_2026-06-15`)).data.sessions.length, 1);
+  const ravi = r.body.payroll.staff.find((x) => x.staffId === 'S1');
+  assert.ok(ravi && ravi.slipUrl.endsWith('/biz/B1/payroll/2026-06/S1/slip'));
+  assert.ok(r.body.allSlipsUrl.endsWith('/biz/B1/payroll/2026-06/slips'));
+  assert.equal(typeof r.body.payroll.total.net, 'number');
+  assert.equal(r.body.business, 'SR Shoes');
 });

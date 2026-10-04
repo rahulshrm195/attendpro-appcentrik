@@ -5,10 +5,9 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "firebase emulators:exec --only firestore --project demo-attendpro \"node --test test/api.test.mjs\""
+    "test": "npx -y firebase-tools@15 emulators:exec --only firestore --project demo-attendpro \"node --test test/api.test.mjs\""
   },
   "devDependencies": {
-    "firebase-tools": "^15.0.0",
     "wrangler": "^4.0.0"
   }
 }
