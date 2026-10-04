@@ -557,12 +557,30 @@ function showSelfieStep(){
   document.getElementById('punch-selfie-wrap').style.display='block';
   navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false})
     .then(stream=>{const vid=document.getElementById('selfie-video');vid.srcObject=stream;vid.style.display='block';})
-    .catch(()=>toast('Camera permission denied',true));
+    .catch(()=>toast(SELFIE_NEEDED_MSG,true));
 }
+// ── Selfie is required for every punch ──
+function cameraReady(vid){
+  return !!(vid&&vid.srcObject&&vid.readyState>=2&&vid.videoWidth>0);
+}
+// Rejects an all-black frame (lens covered / camera not delivering)
+function frameTooDark(canvas){
+  try{
+    var w=Math.min(canvas.width,64),h=Math.min(canvas.height,64);
+    var tmp=document.createElement('canvas');tmp.width=w;tmp.height=h;
+    var tctx=tmp.getContext('2d');tctx.drawImage(canvas,0,0,w,h);
+    var d=tctx.getImageData(0,0,w,h).data,sum=0;
+    for(var i=0;i<d.length;i+=4)sum+=d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114;
+    return sum/(d.length/4)<12;
+  }catch(e){return false;}
+}
+const SELFIE_NEEDED_MSG='📷 Selfie is required. Allow camera access for this site, then try again.';
 window.captureSelfie=function(){
   const vid=document.getElementById('selfie-video'),c=document.getElementById('selfie-canvas');
-  c.width=vid.videoWidth||320;c.height=vid.videoHeight||240;
+  if(!cameraReady(vid))return toast(vid&&vid.srcObject?'Camera is starting — wait a second and tap again':SELFIE_NEEDED_MSG,true);
+  c.width=vid.videoWidth;c.height=vid.videoHeight;
   const ctx=c.getContext('2d');ctx.save();ctx.scale(-1,1);ctx.drawImage(vid,-c.width,0);ctx.restore();
+  if(frameTooDark(c))return toast('Photo is too dark — face the camera in light and tap again',true);
   capturedSelfie=c.toDataURL('image/jpeg',0.5);
   document.getElementById('selfie-preview').src=capturedSelfie;
   document.getElementById('selfie-preview').style.display='block';
@@ -592,6 +610,7 @@ window.confirmPunch=async function(){
   }
 };
 async function doConfirmPunch(){
+  if(!capturedSelfie){toast(SELFIE_NEEDED_MSG,true);return;}
   stopCamera();
   const today=todayStr();
   const key=p.rec(currentStaff.id,today);
@@ -1382,27 +1401,59 @@ window.saveEditPunch=async function(){
 };
 
 
+// Inbox shows pending requests + the last 3 months (this month and the 2 before);
+// older requests load 20 at a time on demand.
+var inboxOlder=[],inboxOlderShown=0;
+function inboxSectionHdr(t,color){
+  return '<div style="font-family:var(--fh);font-size:12px;font-weight:700;color:'+color+';text-transform:uppercase;letter-spacing:1px;margin:16px 0 10px">'+t+'</div>';
+}
 async function renderInbox(){
   setLoading(true,'Loading requests…');
   try{
     const reqs=await fbList(p.requests(),orderBy('ts','desc'));
+    const now=new Date();
+    const cutoff=new Date(now.getFullYear(),now.getMonth()-2,1).getTime();
     const pending=reqs.filter(r=>r.status==='pending');
-    const others=reqs.filter(r=>r.status!=='pending').slice(0,20);
+    const done=reqs.filter(r=>r.status!=='pending');
+    const recent=done.filter(r=>(r.ts||0)>=cutoff);
+    inboxOlder=done.filter(r=>(r.ts||0)<cutoff);
+    inboxOlderShown=0;
     let html='';
-    if(pending.length){
-      html+=`<div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">Pending (${pending.length})</div>`;
-      html+=pending.map(r=>reqCardHtml(r,true)).join('');
-    }
-    if(others.length){
-      html+=`<div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin:16px 0 10px">Recent</div>`;
-      html+=others.map(r=>reqCardHtml(r,true)).join('');
-    }
-    if(!html)html='<div class="empty-state"><div class="emoji">📭</div>No requests yet</div>';
+    if(pending.length) html+=inboxSectionHdr('Pending ('+pending.length+')','var(--accent)')+pending.map(r=>reqCardHtml(r,true)).join('');
+    let lastMonth='';
+    recent.forEach(function(r){
+      const m=new Date(r.ts).toLocaleString('en-IN',{month:'long',year:'numeric'});
+      if(m!==lastMonth){html+=inboxSectionHdr(m,'var(--muted)');lastMonth=m;}
+      html+=reqCardHtml(r,true);
+    });
+    if(!html&&!inboxOlder.length)html='<div class="empty-state"><div class="emoji">📭</div>No requests yet</div>';
+    else if(!recent.length&&!pending.length)html='<div class="empty-state" style="padding:20px;">No requests in the last 3 months</div>';
+    html+='<div id="inbox-older"></div><div id="inbox-older-btn"></div>';
     document.getElementById('inbox-content').innerHTML=html;
+    renderInboxOlderBtn();
   }catch(e){document.getElementById('inbox-content').innerHTML='<div class="empty-state">Error loading inbox</div>';}
   setLoading(false);
   updateInboxBadge();
 }
+function renderInboxOlderBtn(){
+  const el=document.getElementById('inbox-older-btn');if(!el)return;
+  const left=inboxOlder.length-inboxOlderShown;
+  el.innerHTML=left>0?'<button class="btn btn-ghost" style="margin-top:6px;" onclick="showOlderInbox()">Show older requests ('+left+')</button>':'';
+}
+window.showOlderInbox=function(){
+  const box=document.getElementById('inbox-older');if(!box)return;
+  const batch=inboxOlder.slice(inboxOlderShown,inboxOlderShown+20);
+  let html='',lastMonth=box.dataset.lastMonth||'';
+  batch.forEach(function(r){
+    const m=r.ts?new Date(r.ts).toLocaleString('en-IN',{month:'long',year:'numeric'}):'Older';
+    if(m!==lastMonth){html+=inboxSectionHdr(m,'var(--muted)');lastMonth=m;}
+    html+=reqCardHtml(r,true);
+  });
+  box.dataset.lastMonth=lastMonth;
+  box.insertAdjacentHTML('beforeend',html);
+  inboxOlderShown+=batch.length;
+  renderInboxOlderBtn();
+};
 
 async function updateInboxBadge(){
   try{
@@ -1419,11 +1470,14 @@ function reqCardHtml(r,isOwner){
   const statusHtml=r.status==='pending'?`<span class="status-pending">Pending</span>`:r.status==='approved'?`<span class="status-approved">✓ Approved</span>`:`<span class="status-rejected">✗ Rejected</span>`;
   const meta=isLeave?`${r.leaveType==='full'?'Full Day':r.leaveType==='half'?'Half Day':'Custom Hours'} · ${r.from}${r.to&&r.to!==r.from?' → '+r.to:''}`:`₹${r.amount?.toLocaleString('en-IN')}`;
   const actionsHtml=isOwner&&r.status==='pending'?`<div class="req-card-actions"><button class="btn btn-green btn-xs" onclick="approveReq('${r.id}')">✓ Approve</button><button class="btn btn-red btn-xs" onclick="rejectReq('${r.id}')">✗ Reject</button></div>`:'';
-  const noteHtml=r.ownerNote?`<div style="font-size:11px;color:var(--muted);margin-top:4px">Note: ${r.ownerNote}</div>`:'';
+  const noteHtml=r.ownerNote?`<div style="font-size:11px;color:var(--muted);margin-top:4px">Note: ${ksEsc(r.ownerNote)}</div>`:'';
+  const reqDate=r.ts?new Date(r.ts).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}):'';
+  const decided=r.status!=='pending'&&r.actionDate?` · ${r.status==='approved'?'Approved':'Rejected'} ${ksEsc(r.actionDate)}`:'';
+  const dateHtml=reqDate?`<div style="font-size:11px;color:var(--muted);margin-top:4px">📅 Requested ${reqDate}${decided}${r.source==='kiosk'?' · via shop phone':''}</div>`:'';
   return `<div class="req-card req-type-${r.type}">
-    <div class="req-card-head"><span class="req-card-title">${isLeave?'📋 Leave':'💵 Advance'} — ${r.staffName}</span>${statusHtml}</div>
-    <div class="req-card-meta">${meta} · ${r.reason}</div>
-    ${noteHtml}${actionsHtml}</div>`;
+    <div class="req-card-head"><span class="req-card-title">${isLeave?'📋 Leave':'💵 Advance'} — ${ksEsc(r.staffName)}</span>${statusHtml}</div>
+    <div class="req-card-meta">${ksEsc(meta)} · ${ksEsc(r.reason)}</div>
+    ${dateHtml}${noteHtml}${actionsHtml}</div>`;
 }
 
 window.approveReq=async function(id){
@@ -1512,8 +1566,9 @@ window.renderReport=async function(){
         var bOpen=b.sessions?b.sessions.some(function(ss){return !ss.outTime;}):!b.outTime;
         if(aOpen&&!bOpen)return -1;
         if(!aOpen&&bOpen)return 1;
-        return (b.date||'').localeCompare(a.date||'');
-      }).slice(0,30);
+        if((b.date||'')!==(a.date||''))return (b.date||'').localeCompare(a.date||'');
+        return (a.staffName||'').localeCompare(b.staffName||'');
+      });
     // Build a set of dates that have records for selected staff
     var dim2=new Date(d.getFullYear(),d.getMonth()+1,0).getDate();
     var today2=todayStr();
@@ -1548,8 +1603,15 @@ window.renderReport=async function(){
         });
         rhtml+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin:12px 0 6px;letter-spacing:.5px;">EXISTING RECORDS</div>';
       }
+      var lastHdr='';
       for(var ri=0;ri<list.length;ri++){
         var r=list[ri];
+        var rOpen=r.sessions&&r.sessions.length?r.sessions.some(function(ss){return !ss.outTime;}):!r.outTime;
+        var hdr=rOpen?'⏳ NO PUNCH-OUT':new Date(r.date+'T00:00:00').toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'}).toUpperCase();
+        if(sid==='all'&&hdr!==lastHdr){
+          rhtml+='<div style="font-size:11px;font-weight:700;color:'+(rOpen?'var(--accent)':'var(--muted)')+';margin:'+(ri?'14px':'0')+' 0 4px;letter-spacing:.5px;">'+hdr+'</div>';
+          lastHdr=hdr;
+        }
         var sessions=r.sessions&&r.sessions.length?r.sessions:null;
         var inT=sessions?sessions[0].inTime:r.inTime;
         var sub=sessions&&sessions.length>1?
@@ -2917,7 +2979,7 @@ function ksOpenCamera(){
   var vid=document.getElementById('ks-video');
   navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false})
     .then(function(stream){ksVideoStream=stream;vid.srcObject=stream;})
-    .catch(function(){ksSelfieData=null;ksDoPunch();});
+    .catch(function(){toast(SELFIE_NEEDED_MSG,true);ksReset();});
 }
 
 function ksStopCamera(){
@@ -2927,12 +2989,13 @@ function ksStopCamera(){
 
 window.ksCaptureSelfie=function(){
   var vid=document.getElementById('ks-video');
-  if(!vid||!vid.srcObject){ksSelfieData=null;ksDoPunch();return;}
+  if(!cameraReady(vid)){toast(vid&&vid.srcObject?'Camera is starting — wait a second and tap again':SELFIE_NEEDED_MSG,true);return;}
   var canvas=document.createElement('canvas');
   canvas.width=320;canvas.height=320;
   var ctx=canvas.getContext('2d');
   ctx.translate(320,0);ctx.scale(-1,1);
   ctx.drawImage(vid,0,0,320,320);
+  if(frameTooDark(canvas)){toast('Photo is too dark — face the camera in light and tap again',true);return;}
   ksSelfieData=canvas.toDataURL('image/jpeg',0.6);
   ksStopCamera();
   ksDoPunch();
@@ -2999,6 +3062,7 @@ function ksVerifyExit(){
 var ksPunchBusy=false;
 async function ksDoPunch(){
   var s=ksSelectedStaff;if(!s)return;
+  if(!ksSelfieData){toast(SELFIE_NEEDED_MSG,true);return;}
   if(ksPunchBusy)return;
   ksPunchBusy=true;
   var today=todayStr();
@@ -3775,7 +3839,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.20.1</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.20.2</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4051,7 +4115,7 @@ textarea.form-input{resize:none;}
         <p style="font-size:11px;color:var(--muted);margin-top:8px;">🟠 Orange dot (right) = late arrival &nbsp;·&nbsp; 🟣 Purple dot (left) = worked less than standard hours</p>
       </div>
       <div class="card"><div class="card-title">Log</div>
-        <div class="scroll-list" id="report-log"></div>
+        <div class="scroll-list" id="report-log" style="max-height:70vh;"></div>
         <div style="display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
           <button class="btn btn-ghost btn-sm" onclick="exportAttendanceCSV()" style="flex:1;">📊 Export CSV</button>
           <button class="btn btn-ghost btn-sm" onclick="exportAttendancePDF()" style="flex:1;">🖨️ Print / PDF</button>
@@ -4699,7 +4763,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.20.1</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.20.2</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -4707,11 +4771,23 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.20.2 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.20.2</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Selfie is now required for every punch, on the shop phone and staff phones — no photo, no punch</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Inbox shows the date of every request, grouped by month; only the last 3 months load, older ones on demand</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Reports log now shows the whole month for All Staff, grouped by date</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.20.1 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.20.1</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.20.1</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>⚡ Auto-fix double taps — removes all clear duplicate sessions for the month in one tap; unclear days stay for you to check</span></div>
