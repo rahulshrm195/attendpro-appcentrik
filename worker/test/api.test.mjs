@@ -200,30 +200,38 @@ test('PATCH with session "new" creates a missing record', async () => {
 test('payroll matches the app rules', async () => {
   // Work days 24 (30 − 4 Sundays − holiday − paid leave); present 3, absent 21, late 1
   // base = round(1350/540 × 1000) = 2500, OT 60 min × ₹100 = 100, Sunday 270 min → 500,
-  // paid leave 1000, late −50 → gross 4050; recover this month's ₹1000 advance → net 3050
+  // paid leave 1000, late −50, 4 paid Sundays 4000 → gross 8050; recover this month's ₹1000 → net 7050
   const { status, body } = await call('GET', '/biz/B1/payroll/2026-09/S1');
   assert.equal(status, 200);
   assert.deepEqual(
     { ...body.attendance },
     { workDays: 24, present: 3, absent: 21, late: 1, offDays: 6, weeklyOffDays: 4, weeklyOffWorked: 1,
       paidLeaveDays: 1, shortDays: 1, shortMins: 270, otMins: 60, baseWorkedMins: 1350 });
-  assert.deepEqual(body.pay, { basePay: 2500, otPay: 100, incentive: 0, weeklyOffBonus: 500, weeklyOffPay: 0,
-    paidLeave: 1000, lateDeduction: 50, gross: 4050, advanceRecovered: 1000, net: 3050 });
+  assert.deepEqual(body.pay, { basePay: 2500, otPay: 100, incentive: 0, weeklyOffBonus: 500, weeklyOffPay: 4000,
+    paidLeave: 1000, lateDeduction: 50, gross: 8050, advanceRecovered: 1000, net: 7050 });
   assert.deepEqual(body.advances, { outstanding: 3000, thisMonth: 1000, carriedIn: 2000, carryForwardAfter: 2000 });
 
   const r2 = await call('GET', '/biz/B1/payroll/2026-09/S1?incentive=200&advanceRecover=5000');
-  assert.equal(r2.body.pay.gross, 4250);
+  assert.equal(r2.body.pay.gross, 8250);
   assert.equal(r2.body.pay.advanceRecovered, 3000);
-  assert.equal(r2.body.pay.net, 1250);
+  assert.equal(r2.body.pay.net, 5250);
   assert.equal((await call('GET', '/biz/B1/payroll/2026-09/S1?incentive=-5')).status, 400);
   assert.equal((await call('GET', '/biz/B1/payroll/2026-09/NOBODY')).status, 404);
+});
+
+test('weekly offs unpaid when the business turns them off', async () => {
+  await db.commit([{ set: `${B}/settings/main`, data: { weeklyOffPaid: false }, merge: true }]);
+  const { body } = await call('GET', '/biz/B1/payroll/2026-09/S1');
+  assert.equal(body.pay.weeklyOffPay, 0);
+  assert.equal(body.pay.gross, 4050);
+  await db.commit([{ set: `${B}/settings/main`, data: { weeklyOffPaid: true }, merge: true }]);
 });
 
 test('payroll for all staff matches the single-staff numbers', async () => {
   const { status, body } = await call('GET', '/biz/B1/payroll/2026-09');
   assert.equal(status, 200);
   const ravi = body.staff.find((x) => x.staffId === 'S1');
-  assert.equal(ravi.pay.net, 3050);
+  assert.equal(ravi.pay.net, 7050);
   assert.equal(ravi.salaryConfigured, true);
   const amit = body.staff.find((x) => x.staffId === 'S2');
   assert.equal(amit.salaryConfigured, false);
