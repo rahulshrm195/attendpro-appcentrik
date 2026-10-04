@@ -906,6 +906,26 @@ function fixMonthInfo(){
 }
 window.changeFixMonth=function(n){fixMonthOff+=n;renderFixList();};
 
+// "Needs a check" flags: not errors, but days that usually mean a missed punch.
+// ctx: {stdMins, startTime, off}; off = leave/holiday/weekly off → no review flags.
+function reviewPunchFlags(rec,today,ctx){
+  if(!ctx||ctx.off||rec.reviewOk)return [];
+  var flags=[];
+  var ss=rec.sessions&&rec.sessions.length?rec.sessions:null;
+  var open=ss?ss.some(function(s){return !s.outTime;}):!rec.outTime;
+  var total=ss?ss.reduce(function(a,s){return a+(s.workedMins||0);},0):(rec.workedMins||0);
+  if(!open&&rec.date<today&&ctx.stdMins>0&&total<ctx.stdMins/2)
+    flags.push({code:'short_day',sev:'review',session:null,msg:'Only '+minsToHM(total)+' worked (standard '+minsToHM(ctx.stdMins)+') — missed punch-in or punch-out?'});
+  var firstISO=ss?ss[0].inISO:rec.inISO;
+  if(firstISO&&ctx.startTime){
+    var fi=new Date(firstISO),sp=ctx.startTime.split(':').map(Number);
+    var lateBy=(fi.getHours()*60+fi.getMinutes())-(sp[0]*60+sp[1]);
+    if(lateBy>180)flags.push({code:'late_start',sev:'review',session:null,
+      msg:'First punch-in at '+(ss?ss[0].inTime:rec.inTime)+' — '+minsToHM(lateBy)+' after start time. Forgot to punch in?'});
+  }
+  return flags;
+}
+
 function detectPunchProblems(rec,today){
   var flags=[];
   var sessions=Array.isArray(rec.sessions)?rec.sessions:[];
@@ -952,8 +972,27 @@ window.renderFixList=async function(){
     var recs=await fbList(p.recs(),where('date','>=',info.prefix+'-01'),where('date','<=',info.prefix+'-31'));
     if(sel.value!=='all')recs=recs.filter(function(r){return r.staffId===sel.value;});
     var today=todayStr();
+    // Context for "needs a check" flags: each staff's standard hours / start time, leave, holidays, weekly off
+    var sids=[];recs.forEach(function(r){if(sids.indexOf(r.staffId)<0)sids.push(r.staffId);});
+    var cfgs=await Promise.all(sids.map(function(id){return getSalaryCfg(id).catch(function(){return null;});}));
+    var cfgMap={};sids.forEach(function(id,i){cfgMap[id]=cfgs[i]||defaultSalaryCfg();});
+    if(!window._marksCache)window._marksCache={};
+    var marksAll=window._marksCache[info.prefix]||await fbList(p.days()).catch(function(){return [];});
+    window._marksCache[info.prefix]=marksAll;
+    var marks={};marksAll.forEach(function(m){if(m.date&&m.date.indexOf(info.prefix)===0)marks[m.date+(m.staffId?'_'+m.staffId:'')]=m;});
     var bad=[];
-    recs.forEach(function(r){var f=detectPunchProblems(r,today);if(f.length)bad.push({rec:r,flags:f});});
+    recs.forEach(function(r){
+      var cfg=cfgMap[r.staffId];
+      var dow=new Date(r.date+'T00:00:00').getDay();
+      var mk=marks[r.date]||marks[r.date+'_'+r.staffId];
+      var ctx={
+        stdMins:Math.round((cfg.standardHours||calcAutoStdHoursFromCfg(cfg))*60),
+        startTime:cfg.startTime||settings.punchInTime||'10:00',
+        off:(cfg.weeklyOff>=0&&dow==cfg.weeklyOff)||(mk&&(mk.type==='holiday'||mk.type==='leave'))
+      };
+      var f=detectPunchProblems(r,today).concat(reviewPunchFlags(r,today,ctx));
+      if(f.length)bad.push({rec:r,flags:f});
+    });
     bad.sort(function(a,b){return (a.rec.date+(a.rec.staffName||'')).localeCompare(b.rec.date+(b.rec.staffName||''));});
     var sumEl=document.getElementById('fix-summary');
     if(!bad.length){
@@ -962,7 +1001,11 @@ window.renderFixList=async function(){
         '<button class="btn btn-primary btn-sm" style="display:inline-flex;width:auto;" onclick="showOwnerTab(\'payroll\',document.querySelector(\'#owner-tabs .tab[data-tab=payroll]\'))">Go to Payroll →</button></div>';
       return;
     }
-    sumEl.innerHTML='<span style="color:var(--red);font-weight:700;">'+bad.length+' day'+(bad.length!==1?'s':'')+' need fixing</span> out of '+recs.length+' records';
+    var nFix=bad.filter(function(b){return b.flags.some(function(f){return f.sev!=='review';});}).length;
+    var nCheck=bad.length-nFix;
+    sumEl.innerHTML=(nFix?'<span style="color:var(--red);font-weight:700;">'+nFix+' day'+(nFix!==1?'s':'')+' need fixing</span>':'')+
+      (nFix&&nCheck?' · ':'')+(nCheck?'<span style="color:var(--accent);font-weight:700;">'+nCheck+' to check</span>':'')+
+      ' out of '+recs.length+' records';
     fixPlans=[];
     bad.forEach(function(b){var pl=planDoubleTapFix(b.rec);if(pl)fixPlans.push(pl);});
     if(fixPlans.length){
@@ -984,7 +1027,7 @@ window.renderFixList=async function(){
         '</div>';
       }).join('');
       var flagHtml=b.flags.map(function(f){
-        return '<div style="font-size:12px;color:'+(f.sev==='high'?'var(--red)':'var(--accent)')+';margin-top:3px;">⚠ '+ksEsc(f.msg)+'</div>';
+        return '<div style="font-size:12px;color:'+(f.sev==='high'?'var(--red)':'var(--accent)')+';margin-top:3px;">'+(f.sev==='review'?'🔍 ':'⚠ ')+ksEsc(f.msg)+'</div>';
       }).join('');
       var dupHint=b.flags.some(function(f){return f.code==='duplicate_session'||f.code==='tiny_session';})&&sessions.length>1?
         '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Double tap? Remove the extra session.</div>':'';
@@ -993,7 +1036,11 @@ window.renderFixList=async function(){
           '<div style="font-weight:800;font-size:15px;">'+ksEsc(name)+'</div>'+
           '<div style="font-size:12px;color:var(--muted);">'+date+'</div></div>'+
         sessHtml+flagHtml+dupHint+
-        '<button class="btn btn-ghost btn-sm" style="margin-top:10px;border-color:var(--accent);color:var(--accent);" onclick="openEditPunch(\''+sid+'\',\''+date+'\')">✏️ Edit times</button>'+
+        '<div style="display:flex;gap:8px;margin-top:10px;">'+
+        '<button class="btn btn-ghost btn-sm" style="flex:1;border-color:var(--accent);color:var(--accent);" onclick="openEditPunch(\''+sid+'\',\''+date+'\')">✏️ Edit times</button>'+
+        (b.flags.some(function(f){return f.sev==='review';})&&!b.flags.some(function(f){return f.sev!=='review';})?
+          '<button class="btn btn-ghost btn-sm" style="flex:1;border-color:var(--green);color:var(--green);" onclick="fixMarkOk(\''+sid+'\',\''+date+'\')">✓ Looks right</button>':'')+
+        '</div>'+
       '</div>';
     }).join('');
   }catch(e){
@@ -1061,6 +1108,14 @@ window.applyDoubleTapFix=async function(){
   setLoading(false);
   toast(failed?('Fixed '+done+' day'+(done!==1?'s':'')+', '+failed+' failed — try again'):'✓ Fixed '+done+' day'+(done!==1?'s':''),!!failed);
   renderFixList();
+};
+
+window.fixMarkOk=async function(staffId,date){
+  try{
+    await updateDoc(doc(db,p.rec(staffId,date)),{reviewOk:true,_updatedAt:serverTimestamp()});
+    toast('✓ Marked as checked');
+    renderFixList();
+  }catch(e){toast('Error: '+e.message,true);}
 };
 
 window.fixRemoveSession=function(staffId,date,idx){
@@ -1450,7 +1505,7 @@ async function renderInbox(){
     if(pending.length) html+=inboxSectionHdr('Pending ('+pending.length+')','var(--accent)')+pending.map(r=>reqCardHtml(r,true)).join('');
     if(!pending.length&&!inboxMonths.length) html='<div class="empty-state"><div class="emoji">📭</div>No requests yet</div>';
     html+='<div id="inbox-months">'+inboxMonths.slice(0,inboxMonthsShown).map(function(m,i){
-      return inboxMonthHtml(m,i,m.key===curKey||(i===0&&!pending.length&&m.key>=cutKey&&!byMonth[curKey]));
+      return inboxMonthHtml(m,i,m.key===curKey);
     }).join('')+'</div><div id="inbox-older-btn"></div>';
     document.getElementById('inbox-content').innerHTML=html;
     renderInboxOlderBtn();
@@ -3864,7 +3919,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.20.4</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.20.5</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4788,7 +4843,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.20.4</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.20.5</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -4796,11 +4851,23 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.20.5 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.20.5</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Fix tab flags days that need a check: very short days and a first punch-in 3+ hours after start time (missed punch-in?)</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>"✓ Looks right" to dismiss a genuine short or late day; leave, holidays and weekly offs are never flagged</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Inbox opens only the current month</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.20.4 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.20.4</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.20.4</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>⚡ Auto-fix now also cleans up today's double taps — no need to remove them by hand</span></div>
