@@ -783,6 +783,19 @@ function updateStaffReqBadge(){
 // ─────────────────────────────────────────────
 //  MY HISTORY
 // ─────────────────────────────────────────────
+// Attendance row: photo · name + tags · actions on one line; sessions full-width below.
+function attRowHtml(o){
+  return '<div class="att-row'+(o.highlight?' att-open':'')+'">'+
+    '<div class="att-head">'+o.thumb+
+      '<div class="att-name"><div class="att-title">'+ksEsc(o.name)+'</div>'+(o.tags?'<div class="att-tags">'+o.tags+'</div>':'')+'</div>'+
+      '<div class="att-actions">'+(o.edit||'')+(o.status||'')+'</div>'+
+    '</div>'+
+    '<div class="att-body">'+o.body+'</div>'+
+  '</div>';
+}
+function attEditBtn(staffId,date){
+  return '<button class="att-edit" title="Edit" onclick="openEditPunch(\''+ksEsc(staffId)+'\',\''+ksEsc(date)+'\')">✏️</button>';
+}
 // One line per session (S1 10:15 AM → 12:56 PM · 2h 41m), then the day total.
 // extra: text appended to the last line (e.g. distance from store).
 function punchLinesHtml(r,extra){
@@ -796,7 +809,7 @@ function punchLinesHtml(r,extra){
   if(ss&&ss.length>1){
     html=ss.map(function(s,i){return line('S'+(i+1),s);}).join('');
     var tot=ss.reduce(function(a,s){return a+(s.workedMins||0);},0);
-    html+='<div class="punch-line pl-total">Total '+minsToHM(tot)+(extra?' · '+ksEsc(extra):'')+'</div>';
+    html+='<div class="punch-line pl-total"><span>Total'+(extra?' <span class="att-muted" style="font-weight:400;">· '+ksEsc(extra)+'</span>':'')+'</span><span class="pl-dur">'+minsToHM(tot)+'</span></div>';
   } else {
     var s1=ss?ss[0]:{inTime:r&&r.inTime,outTime:r&&r.outTime,workedMins:r&&r.workedMins};
     html=line('',s1);
@@ -1181,11 +1194,14 @@ async function renderOwnerToday(){
       const dist=rec&&rec.inDist!=null?rec.inDist+'m from store':'';
       const sub=rec?punchLinesHtml(rec,dist):'<div class="punch-line">Not punched in</div>';
       const selfie=last?last.inSelfie:(rec?rec.inSelfie:null);
-      html+='<div class="row"><div class="row-main"><div class="row-title">'+s.name+
-        (rec&&rec.late?' <span class="late-tag">LATE</span>':'')+(rec&&rec.gpsFlag?' <span class="gps-flag-tag">⚠️ LOCATION</span>':'')+
-        '</div><div class="row-sub">'+sub+'</div></div>'+
-        (rec?'<button class="btn btn-ghost btn-xs" style="color:var(--accent2);border-color:var(--accent2);font-size:11px;padding:4px 8px;margin-right:6px;" onclick="openEditPunch(\''+s.id+'\',\''+today+'\')">✏️ Edit</button>':'')+
-        status+thumbHTML(selfie,s.name,rec?rec.inTime:null)+'</div>';
+      html+=attRowHtml({
+        name:s.name,
+        tags:(rec&&rec.late?'<span class="late-tag">LATE</span>':'')+(rec&&rec.gpsFlag?'<span class="gps-flag-tag">⚠️ LOCATION</span>':''),
+        thumb:thumbHTML(selfie,s.name,rec?rec.inTime:null),
+        edit:rec?attEditBtn(s.id,today):'',
+        status:status,
+        body:sub
+      });
     });
     const late=active.filter(s=>recs[s.id+'_'+today]?.late).map(s=>s.name);
     if(late.length)html+=`<div class="divider"></div><div style="color:var(--accent2);font-size:12px;font-weight:700">⚠️ Late: ${late.join(', ')}</div>`;
@@ -1704,14 +1720,17 @@ window.renderReport=async function(){
         var sub=punchLinesHtml(r,r.inDist!=null?r.inDist+'m from store':'');
         var selfie=sessions?sessions[0].inSelfie:r.inSelfie;
         var hasOpenSession=sessions?sessions.some(function(ss){return !ss.outTime;}):!r.outTime;
-        rhtml+='<div class="row" style="'+(hasOpenSession?'border-left:3px solid var(--accent);padding-left:10px;':'')+'"><div class="row-main"><div class="row-title">'+r.staffName+
-          (hasOpenSession?' <span style="font-size:10px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.12);border:1px solid rgba(245,166,35,.3);border-radius:8px;padding:2px 6px;">⏳ No Punch Out</span>':'')+
-          (r.late?' <span class="late-tag">LATE</span>':'')+(r.gpsFlag?' <span class="gps-flag-tag">⚠️ LOCATION</span>':'')+
-          (r.manualEdit?' <span style="font-size:10px;color:var(--muted)">(edited)</span>':'')+
-          (r.manual?' <span style="font-size:10px;color:var(--muted)">(manual)</span>':'')+
-          '</div><div class="row-sub"><div class="punch-line" style="font-weight:600;">'+r.date+'</div>'+sub+'</div></div>'+
-          '<button class="btn btn-ghost btn-xs" style="color:var(--accent2);border-color:var(--accent2);font-size:11px;padding:4px 8px;" onclick="openEditPunch(\''+r.staffId+'\',\''+r.date+'\')">✏️ Edit</button>'+
-          thumbHTML(selfie,r.staffName,inT)+'</div>';
+        rhtml+=attRowHtml({
+          name:r.staffName,
+          highlight:hasOpenSession,
+          tags:(sid!=='all'?'<span class="att-date">'+ksEsc(r.date)+'</span>':'')+
+            (hasOpenSession?'<span class="att-tag-open">⏳ No Punch Out</span>':'')+
+            (r.late?'<span class="late-tag">LATE</span>':'')+(r.gpsFlag?'<span class="gps-flag-tag">⚠️ LOCATION</span>':'')+
+            (r.manualEdit?'<span class="att-muted">edited</span>':'')+(r.manual?'<span class="att-muted">manual</span>':''),
+          thumb:thumbHTML(selfie,r.staffName,inT),
+          edit:attEditBtn(r.staffId,r.date),
+          body:sub
+        });
       }
       document.getElementById('report-log').innerHTML=rhtml;
     }
@@ -3922,10 +3941,25 @@ textarea.form-input{resize:none;}
 .row-main{flex:1;min-width:0;}
 .row-title{font-weight:600;font-size:14px;}
 .row-sub{font-size:12px;color:var(--muted);margin-top:2px;}
+.att-row{padding:12px 0;border-bottom:1px solid var(--border);}
+.att-row:last-child{border-bottom:none;}
+.att-open{border-left:3px solid var(--accent);padding-left:10px;}
+.att-head{display:flex;align-items:center;gap:10px;}
+.att-name{flex:1;min-width:0;}
+.att-title{font-weight:700;font-size:15px;line-height:1.25;}
+.att-tags{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-top:3px;}
+.att-tags .late-tag,.att-tags .gps-flag-tag{margin:0;}
+.att-date{font-size:11px;font-weight:600;color:var(--muted);}
+.att-tag-open{font-size:10px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.12);border:1px solid rgba(245,166,35,.3);border-radius:8px;padding:2px 6px;}
+.att-muted{font-size:10px;color:var(--muted);}
+.att-actions{display:flex;align-items:center;gap:6px;flex-shrink:0;}
+.att-edit{background:none;border:1px solid var(--border);border-radius:8px;width:32px;height:28px;cursor:pointer;font-size:13px;line-height:1;}
+.att-body{margin:8px 0 0 50px;font-size:13px;color:var(--muted);}
 .punch-line{display:flex;align-items:baseline;column-gap:8px;line-height:1.55;flex-wrap:wrap;}
 .pl-main{white-space:nowrap;}
 .pl-lbl{display:inline-block;min-width:22px;font-weight:700;color:var(--text);opacity:.7;}
 .pl-dur{margin-left:auto;font-weight:600;color:var(--text);opacity:.8;}
+.pl-total .pl-dur{opacity:1;font-weight:800;}
 .pl-total{font-weight:700;color:var(--text);opacity:.85;}
 .selfie-thumb{width:40px;height:40px;border-radius:50%;object-fit:cover;border:2px solid var(--accent);cursor:pointer;flex-shrink:0;}
 .selfie-ph{width:40px;height:40px;border-radius:50%;background:var(--s2);border:2px dashed var(--border);display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;}
@@ -4038,7 +4072,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.21.1</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.21.2</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4976,7 +5010,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.21.1</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.21.2</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -4984,11 +5018,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.21.2 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.21.2</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Cleaner attendance rows on Today and Reports: photo, name and buttons on top; sessions and durations full-width below</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.21.1 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.21.1</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.21.1</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Staff history now shows the whole month — dates 1–9 were missing because only the 20 latest punches were listed</span></div>
