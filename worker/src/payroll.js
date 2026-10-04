@@ -39,6 +39,7 @@ function parseTime12(t) {
  * @param {Array}  a.advances   this staff's advance docs
  * @param {number} a.incentive
  * @param {number|null} a.advanceRecover  null = app default (this month's advances, else all outstanding)
+ * @param {boolean} a.weeklyOffPaid  business setting; weekly offs are paid unless false
  */
 export function computePayroll(a) {
   const cfg = Object.assign(defaultSalaryCfg(), a.cfg || {});
@@ -129,14 +130,15 @@ export function computePayroll(a) {
 
   const otPay = Math.round((otMins / 60) * otRatePerHour);
   const weeklyOffBonus = stdMins > 0 ? Math.round((weeklyOffWorkedMins / stdMins) * perDay) : 0;
-  const woPay = cfg.showWoPay ? weeklyOffPaidDays * perDay : 0;
+  // Business rule (settings.weeklyOffPaid); paid unless turned off
+  const woPay = a.weeklyOffPaid !== false ? weeklyOffPaidDays * perDay : 0;
   let lateD = 0;
   if (cfg.lateRule === 'fixed') lateD = late * (cfg.lateAmount || 0);
   else if (cfg.lateRule === 'halfday') lateD = Math.floor(late / (cfg.lateHalfAfter || 3)) * Math.round(perDay / 2);
   const incentive = a.incentive || 0;
 
   const totalOutstanding = a.ledgerBalance > 0 ? a.ledgerBalance : 0;
-  const thisMonthAdvs = (a.advances || []).filter((x) => x.date && x.date.startsWith(prefix));
+  const thisMonthAdvs = (a.advances || []).filter((x) => !x.opening && x.date && x.date.startsWith(prefix));
   const thisMonthTotal = thisMonthAdvs.reduce((s, x) => s + (x.amount || 0), 0);
   const carryForwardIn = Math.max(0, totalOutstanding - thisMonthTotal);
   const defaultRecover = totalOutstanding > 0 ? (thisMonthTotal > 0 ? thisMonthTotal : totalOutstanding) : 0;

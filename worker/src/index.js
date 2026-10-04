@@ -308,12 +308,13 @@ async function payroll(ctx, bizId, month, staffId) {
     return Number(v);
   };
   const staff = await requireStaff(ctx, bizId, staffId);
-  const [cfgDoc, recs, marks, ledger, advances] = await Promise.all([
+  const [cfgDoc, recs, marks, ledger, advances, sett] = await Promise.all([
     ctx.db.get(P.salary(bizId, staffId)),
     ctx.db.list(P.recs(bizId), [['staffId', '==', staffId], ['date', '>=', from], ['date', '<=', to]]),
     ctx.db.list(P.days(bizId), [['date', '>=', from], ['date', '<=', to]]),
     ctx.db.get(P.advLedger(bizId, staffId)),
     ctx.db.list(P.advances(bizId), [['staffId', '==', staffId]]),
+    ctx.db.get(P.settings(bizId)),
   ]);
   const result = computePayroll({
     cfg: cfgDoc ? cfgDoc.data : defaultSalaryCfg(),
@@ -322,6 +323,7 @@ async function payroll(ctx, bizId, month, staffId) {
     recs: recMapOf(recs), marks: markMapOf(marks),
     ledgerBalance: ledger ? ledger.data.balance || 0 : 0,
     advances: advances.map((a) => a.data),
+    weeklyOffPaid: !(sett && sett.data.weeklyOffPaid === false),
     incentive: intParam('incentive') || 0,
     advanceRecover: intParam('advanceRecover'),
   });
@@ -342,14 +344,16 @@ function markMapOf(marks) {
 /** Payroll for every active staff member (and anyone with attendance that month), with app defaults. */
 async function payrollAll(ctx, bizId, month) {
   const { y, m, from, to } = monthRange(month);
-  const [staffDocs, cfgs, recs, marks, ledgers, advances] = await Promise.all([
+  const [staffDocs, cfgs, recs, marks, ledgers, advances, sett] = await Promise.all([
     ctx.db.list(P.staff(bizId)),
     ctx.db.list(`businesses/${bizId}/salary_config`),
     ctx.db.list(P.recs(bizId), [['date', '>=', from], ['date', '<=', to]]),
     ctx.db.list(P.days(bizId), [['date', '>=', from], ['date', '<=', to]]),
     ctx.db.list(`businesses/${bizId}/advance_ledger`),
     ctx.db.list(P.advances(bizId)),
+    ctx.db.get(P.settings(bizId)),
   ]);
+  const weeklyOffPaid = !(sett && sett.data.weeklyOffPaid === false);
   const byId = (docs) => Object.fromEntries(docs.map((d) => [d.id, d.data]));
   const cfgMap = byId(cfgs), ledgerMap = byId(ledgers);
   const withRecs = new Set(recs.map((r) => r.data.staffId));
@@ -366,7 +370,7 @@ async function payrollAll(ctx, bizId, month) {
         recs: recMap, marks: markMap,
         ledgerBalance: ledgerMap[s.id] ? ledgerMap[s.id].balance || 0 : 0,
         advances: advances.filter((a) => a.data.staffId === s.id).map((a) => a.data),
-        incentive: 0, advanceRecover: null,
+        incentive: 0, advanceRecover: null, weeklyOffPaid,
       }),
     }));
   const total = staff.reduce((t, s) => ({ gross: t.gross + s.pay.gross, net: t.net + s.pay.net,
@@ -398,7 +402,7 @@ async function giveAdvance(ctx, bizId) {
       await ctx.db.commit([
         { set: `${P.advances(bizId)}/${advId}`, ifMissing: true,
           data: { staffId, staffName: staff.name, amount, date, note: note || '', recovered: false,
-            countedInLedger: true, source: 'api', _createdAt: new Date() } },
+            countedInLedger: true, source: 'api', ts: Date.now(), _createdAt: new Date() } },
         ledgerWrite,
         { set: `${P.advLedgerLog(bizId)}/${logId}`, ifMissing: true,
           data: { type: 'given', staffId, staffName: staff.name, amount, date, note: note || '',

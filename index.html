@@ -1558,7 +1558,7 @@ window.approveReq=async function(id){
     const r=all.find(x=>x.id===id);if(!r){setLoading(false);return;}
     await updateDoc(doc(db,p.reqDoc(id)),{status:'approved',actionDate:new Date().toLocaleDateString('en-IN')});
     if(r.type==='advance'){
-      await fbAdd(p.advances(),{staffId:r.staffId,staffName:r.staffName,amount:r.amount,date:new Date().toISOString().split('T')[0],note:'Approved: '+r.reason,recovered:false,countedInLedger:true,fromRequest:id});
+      await fbAdd(p.advances(),{staffId:r.staffId,staffName:r.staffName,amount:r.amount,date:new Date().toISOString().split('T')[0],note:'Approved: '+r.reason,recovered:false,countedInLedger:true,fromRequest:id,ts:Date.now()});
       // Update ledger balance
       const ledger=await fbGet(p.advLedger(r.staffId)).catch(()=>null);
       const prev=ledger&&ledger.balance>0?ledger.balance:0;
@@ -1570,7 +1570,7 @@ window.approveReq=async function(id){
       const batch=writeBatch(db);
       days.forEach(ds=>{
         const ref=doc(db,p.day(ds,r.staffId));
-        batch.set(ref,{type:'leave',staffId:r.staffId,date:ds,note:r.reason,leaveType:r.leaveType,approved:true,_updatedAt:serverTimestamp()},{merge:true});
+        batch.set(ref,{type:'leave',staffId:r.staffId,date:ds,note:r.reason,leaveType:r.leaveType,approved:true,paidLeave:settings.inboxLeavePaid===true,_updatedAt:serverTimestamp()},{merge:true});
       });
       await batch.commit();
     }
@@ -2031,7 +2031,9 @@ window.renderPayroll=async function(){
     var weeklyOffBonus=stdMins>0?Math.round((weeklyOffWorkedMins/stdMins)*perDay):0;
 
     // Weekly Off Paid Days — shown separately if showWoPay enabled
-    var woPay=cfg.showWoPay?weeklyOffPaidDays*perDay:0;
+    // Business rule (Settings → Pay Rules); paid unless turned off
+    var woPaid=settings.weeklyOffPaid!==false;
+    var woPay=woPaid?weeklyOffPaidDays*perDay:0;
 
     // Late deduction — stays as separate rule (Option A agreed)
     var lateD=0;
@@ -2047,7 +2049,7 @@ window.renderPayroll=async function(){
     const totalOutstanding=curBalance+(payRec?(payRec.advRecovered||0):0);
     // Split advances: this month vs carry-forward
     const allAdvs=await fbList(p.advances(),where('staffId','==',sid)).catch(function(){return [];});
-    const thisMonthAdvs=allAdvs.filter(function(a){return a.date&&a.date.startsWith(prefix);});
+    const thisMonthAdvs=allAdvs.filter(function(a){return !a.opening&&a.date&&a.date.startsWith(prefix);});
     const thisMonthTotal=thisMonthAdvs.reduce(function(sum,a){return sum+(a.amount||0);},0);
     const carryFwdAmt=Math.max(0,totalOutstanding-thisMonthTotal);
 
@@ -2118,7 +2120,7 @@ window.renderPayroll=async function(){
     // Weekly Off Pay — separate line if enabled
     var woPayRow=document.getElementById('pb-wopay-row');
     if(woPayRow){
-      if(cfg.showWoPay&&weeklyOffPaidDays>0){
+      if(woPaid&&weeklyOffPaidDays>0){
         woPayRow.style.display='flex';
         R('pb-wopay-lbl','Weekly Off Pay ('+weeklyOffPaidDays+' day'+(weeklyOffPaidDays>1?'s':'')+' × ₹'+perDay+')');
         R('pb-wopay','+₹'+woPay.toLocaleString('en-IN'));
@@ -2227,7 +2229,7 @@ window.giveAdvance=async function(){
   if(!date)return toast('Select date',true);
   const staffName=staffArr.find(function(s){return s.id===sid;})&&staffArr.find(function(s){return s.id===sid;}).name;
   try{
-    await fbAdd(p.advances(),{staffId:sid,staffName:staffName,amount,date,note,recovered:false,countedInLedger:true});
+    await fbAdd(p.advances(),{staffId:sid,staffName:staffName,amount,date,note,recovered:false,countedInLedger:true,ts:Date.now()});
     // Update ledger balance
     const ledger=await fbGet(p.advLedger(sid)).catch(()=>null);
     const prev=ledger&&ledger.balance>0?ledger.balance:0;
@@ -2255,7 +2257,7 @@ window.giveQuickAdvance=async function(){
   if(!amount||amount<=0)return toast('Enter valid amount',true);
   const staffName=staffArr.find(function(s){return s.id===sid;})&&staffArr.find(function(s){return s.id===sid;}).name;
   try{
-    await fbAdd(p.advances(),{staffId:sid,staffName:staffName,amount,date,note,recovered:false,countedInLedger:true});
+    await fbAdd(p.advances(),{staffId:sid,staffName:staffName,amount,date,note,recovered:false,countedInLedger:true,ts:Date.now()});
     const ledger=await fbGet(p.advLedger(sid)).catch(()=>null);
     const prev=ledger&&ledger.balance>0?ledger.balance:0;
     await fbSet(p.advLedger(sid),{staffId:sid,staffName:staffName,balance:prev+amount,lastUpdated:new Date().toISOString()});
@@ -2290,8 +2292,14 @@ async function renderAdvList(){
     // so the outstanding balance belongs to the most recent advances.
     advStatus={};
     balIds.forEach(function(id){
-      var list=allAdvs.filter(function(a){return a.staffId===id;})
-        .sort(function(a,b){return ((a.date||'')+(a.id||'')).localeCompare((b.date||'')+(b.id||''));});
+      // An opening balance replaces everything before it
+      var opening=allAdvs.find(function(a){return a.opening&&a.staffId===id;});
+      var before=function(a){return opening&&a!==opening&&(a.ts&&opening.ts?a.ts<opening.ts:(a.date||'')<=(opening.date||''));};
+      allAdvs.forEach(function(a){if(a.staffId===id&&before(a))advStatus[a.id]={state:'before',left:0};});
+      var list=allAdvs.filter(function(a){return a.staffId===id&&!before(a);})
+        .sort(function(a,b){
+          if(a.opening)return -1;if(b.opening)return 1;
+          return ((a.date||'')+(a.id||'')).localeCompare((b.date||'')+(b.id||''));});
       var total=list.reduce(function(t,a){return t+(a.amount||0);},0);
       var settled=Math.max(0,total-balMap[id]);
       list.forEach(function(a){
@@ -2306,14 +2314,14 @@ async function renderAdvList(){
     for(var i=0;i<active.length;i++){
       var s=active[i];
       var bal=balMap[s.id]||0;
-      if(bal>0){
-        anyOutstanding=true;
-        summaryHtml+='<div class="row"><div class="row-main"><div class="row-title">'+s.name+'</div>'+
-          '<div class="row-sub">Outstanding advance</div></div>'+
-          '<span style="color:var(--accent);font-weight:700;font-size:14px;">₹'+bal.toLocaleString('en-IN')+'</span></div>';
-      }
+      if(bal>0)anyOutstanding=true;
+      var op=allAdvs.find(function(a){return a.opening&&a.staffId===s.id;});
+      summaryHtml+='<div class="row"><div class="row-main"><div class="row-title">'+ksEsc(s.name)+'</div>'+
+        '<div class="row-sub">'+(op?'Opening ₹'+(op.amount||0).toLocaleString('en-IN')+' set '+ksEsc(op.date):'Outstanding advance')+'</div></div>'+
+        '<span style="color:'+(bal>0?'var(--accent)':'var(--green)')+';font-weight:700;font-size:14px;margin-right:8px;">₹'+bal.toLocaleString('en-IN')+'</span>'+
+        '<button class="btn btn-ghost btn-xs" style="font-size:11px;padding:4px 8px;white-space:nowrap;" onclick="setOpeningBalance(\''+ksEsc(s.id)+'\')">✏️ Opening</button></div>';
     }
-    if(!anyOutstanding) summaryHtml+='<div style="color:var(--green);font-size:13px;font-weight:600;">✓ No outstanding advances</div>';
+    if(!anyOutstanding) summaryHtml+='<div style="color:var(--green);font-size:13px;font-weight:600;margin-top:6px;">✓ No outstanding advances</div>';
     summaryHtml+='</div><div class="divider"></div>';
 
     // Full transaction log
@@ -2324,14 +2332,18 @@ async function renderAdvList(){
       var st=advStatus[a.id]||{state:'pending',left:a.amount||0};
       // Only a fully unrecovered advance can be deleted (e.g. entered by mistake);
       // deleting a recovered one would wrongly reduce what the staff still owes.
-      var statusHtml=st.state==='settled'?
+      var statusHtml=st.state==='before'?
+        '<span style="color:var(--muted);font-size:11px;">Before opening</span>':
+        st.state==='settled'?
         '<span class="status-approved">Settled</span>':
         st.state==='partial'?
         '<span style="color:var(--accent);font-size:12px;font-weight:600;">₹'+st.left.toLocaleString('en-IN')+' left</span>':
+        a.opening?
+        '<span style="color:var(--accent);font-size:12px;font-weight:600;">Pending</span>':
         '<div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--accent);font-size:12px;font-weight:600;">Pending</span>'+
         '<button class="btn btn-ghost btn-xs" style="color:var(--red);border-color:var(--red);padding:3px 8px;font-size:11px;" onclick="deleteAdvance(\''+a.id+'\',\''+a.staffId+'\','+a.amount+')">🗑️</button></div>';
       logHtml+='<div class="row"><div class="row-main">'+
-        '<div class="row-title">'+ksEsc(a.staffName)+' · ₹'+(a.amount||0).toLocaleString('en-IN')+'</div>'+
+        '<div class="row-title">'+ksEsc(a.staffName)+' · ₹'+(a.amount||0).toLocaleString('en-IN')+(a.opening?' <span style="font-size:10px;color:var(--muted);">(opening balance)</span>':'')+'</div>'+
         '<div class="row-sub">'+ksEsc(a.date)+(a.note?' · '+ksEsc(a.note):'')+'</div></div>'+statusHtml+'</div>';
     });
     el.innerHTML=summaryHtml+logHtml;
@@ -2341,8 +2353,36 @@ async function renderAdvList(){
 // Advance recovery now handled automatically via ledger on markAsPaid
 var advStatus={};
 
+// Opening balance: "as of now, this person owes ₹X". Replaces the ledger balance;
+// advances recorded before it are treated as included in it.
+window.setOpeningBalance=async function(staffId){
+  const s=staffArr.find(function(x){return x.id===staffId;});if(!s)return;
+  const ledger=await fbGet(p.advLedger(staffId)).catch(()=>null);
+  const cur=ledger&&ledger.balance>0?ledger.balance:0;
+  const ans=prompt('Opening advance balance for '+s.name+' — total they owe as of today (₹).\n\nCurrent balance in the app: ₹'+cur.toLocaleString('en-IN')+'.\nThis replaces it.',String(cur));
+  if(ans===null)return;
+  const amt=parseInt(String(ans).replace(/[,₹\s]/g,''),10);
+  if(isNaN(amt)||amt<0||String(ans).replace(/[,₹\s]/g,'')!==String(amt))return toast('Enter a whole amount in ₹, e.g. 4500',true);
+  if(!confirm('Set '+s.name+"'s advance balance to ₹"+amt.toLocaleString('en-IN')+' as of today?\n\nAdvances recorded before today are treated as included in it.'))return;
+  setLoading(true,'Saving opening balance…');
+  try{
+    const today=todayStr(),now=Date.now();
+    const batch=writeBatch(db);
+    batch.set(doc(db,p.advances()+'/opening_'+staffId),{staffId:staffId,staffName:s.name,amount:amt,date:today,ts:now,
+      opening:true,note:'Opening balance',recovered:false,countedInLedger:true,_createdAt:serverTimestamp()});
+    batch.set(doc(db,p.advLedger(staffId)),{staffId:staffId,staffName:s.name,balance:amt,lastUpdated:new Date().toISOString(),openingSetAt:now},{merge:true});
+    batch.set(doc(collection(db,p.advLedgerLog())),{type:'opening',staffId:staffId,staffName:s.name,amount:amt,balanceBefore:cur,balanceAfter:amt,date:today,ts:now});
+    await batch.commit();
+    toast('✓ Opening balance set for '+s.name);
+    renderAdvList();populatePayrollDropdowns();
+  }catch(e){toast('Error: '+e.message,true);}
+  setLoading(false);
+};
+
 window.deleteAdvance=async function(id,staffId,amount){
   var st=advStatus[id];
+  if(String(id).indexOf('opening_')===0)return toast('To change an opening balance, use ✏️ Opening',true);
+  if(st&&st.state==='before')return toast('This advance is included in the opening balance — it cannot be deleted',true);
   if(st&&st.state!=='pending')return toast('This advance was already recovered in payroll — it cannot be deleted',true);
   if(!confirm('Delete this advance of ₹'+amount+'? This will also reduce the ledger balance.'))return;
   try{
@@ -2564,6 +2604,8 @@ function loadOwnerSettings(){
   document.getElementById('set-biz-name').value=biz.name||'';
   document.getElementById('set-biz-loc').value=biz.location||'';
   document.getElementById('set-punch-time').value=settings.punchInTime||'10:00';
+  document.getElementById('set-wo-paid').value=settings.weeklyOffPaid===false?'unpaid':'paid';
+  document.getElementById('set-inbox-leave-paid').value=settings.inboxLeavePaid===true?'paid':'unpaid';
   document.getElementById('mark-date').value=new Date().toISOString().split('T')[0];
   document.getElementById('manual-date').value=new Date().toISOString().split('T')[0];
   const bizIdEl=document.getElementById('biz-id-display');
@@ -2650,6 +2692,15 @@ window.saveBizSettings=async function(){
     ls.set('ap_biz_cache',biz);ls.set('ap_settings_cache',settings);
     document.getElementById('owner-biz-title').textContent=biz.name;
     toast('✓ Settings saved');
+  }catch(e){toast('Error: '+e.message,true);}
+};
+window.savePayRules=async function(){
+  settings.weeklyOffPaid=v('set-wo-paid')!=='unpaid';
+  settings.inboxLeavePaid=v('set-inbox-leave-paid')==='paid';
+  try{
+    await fbSet(p.settings(),{weeklyOffPaid:settings.weeklyOffPaid,inboxLeavePaid:settings.inboxLeavePaid});
+    ls.set('ap_settings_cache',settings);
+    toast('✓ Pay rules saved');
   }catch(e){toast('Error: '+e.message,true);}
 };
 window.changeOwnerPass=async function(){
@@ -3970,7 +4021,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.20.6</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.21.0</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4376,6 +4427,22 @@ textarea.form-input{resize:none;}
         <div class="form-group"><label class="form-label">Default Punch-In Time</label><input type="time" class="form-input" id="set-punch-time"></div>
         <button class="btn btn-primary btn-sm" onclick="saveBizSettings()">Save Settings</button>
       </div><!-- /card business settings -->
+
+      <div class="card">
+        <div class="card-title">💰 Pay Rules</div>
+        <div class="form-group"><label class="form-label">Weekly Offs</label>
+          <select class="form-input form-select" id="set-wo-paid">
+            <option value="paid">Paid — weekly offs count in salary</option>
+            <option value="unpaid">Unpaid</option>
+          </select></div>
+        <div class="form-group"><label class="form-label">Leave Approved from Inbox</label>
+          <select class="form-input form-select" id="set-inbox-leave-paid">
+            <option value="unpaid">Unpaid</option>
+            <option value="paid">Paid</option>
+          </select></div>
+        <p style="font-size:11px;color:var(--muted);margin:-4px 0 12px;">Applies to all staff. Leave you mark yourself under Mark Holiday / Leave keeps its own Paid/Unpaid choice.</p>
+        <button class="btn btn-primary btn-sm" onclick="savePayRules()">Save Pay Rules</button>
+      </div>
 
       <div class="card">
         <div class="card-title">📍 Store Location (GPS Check)</div>
@@ -4792,11 +4859,9 @@ textarea.form-input{resize:none;}
         </select></div>
       <div class="form-group"><label class="form-label">Shift Start</label><input type="time" class="form-input" id="ss-start" onchange="updateAutoStdHours()"></div>
     </div>
-    <div id="ss-wopay-wrap" style="display:none;margin-bottom:14px;">
-      <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
-        <input type="checkbox" id="ss-showwopay" style="width:18px;height:18px;accent-color:var(--accent);">
-        <span style="font-size:13px;font-weight:600;">Show Weekly Off Pay as separate line in payroll<br><span style="font-size:11px;color:var(--muted);font-weight:400;">Staff sees paid weekly offs clearly (e.g. 4 Mondays × ₹333)</span></span>
-      </label>
+    <div id="ss-wopay-wrap" style="display:none;margin-bottom:14px;font-size:11px;color:var(--muted);">
+      Weekly off pay (paid or unpaid) is set for all staff in Settings → 💰 Pay Rules.
+      <input type="checkbox" id="ss-showwopay" style="display:none;">
     </div>
     <div class="two-col">
       <div class="form-group"><label class="form-label">Shift End</label><input type="time" class="form-input" id="ss-end" onchange="updateAutoStdHours()"></div>
@@ -4894,7 +4959,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.20.6</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.21.0</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -4902,11 +4967,23 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.21.0 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.21.0</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Settings → 💰 Pay Rules: choose whether weekly offs are paid (default: paid) and whether leave approved from the Inbox is paid (default: unpaid)</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Advance opening balance per staff (Payroll → Advances → ✏️ Opening): set what each person owes today and start clean</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Advances before the opening balance are shown as "Before opening"; the opening is recovered first in payroll</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.20.6 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.20.6</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.20.6</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Mark as Paid again (or after changing amounts) now updates the payment — the advance is no longer recovered twice</span></div>
