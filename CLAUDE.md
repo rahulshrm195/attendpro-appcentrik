@@ -5,8 +5,8 @@
   pushing to the working branch, open the pull request and merge it into
   `main` yourself. Do not ask the owner to click Merge.
 - `main` is published to attendpro.appcentrik.in by GitHub Pages.
-- Bump the version for every app release: the two version badges and the
-  "What's New" entry in `index.html`, and `CACHE_NAME` in `sw.js`.
+- Bump the version for every app release: `APP_VERSION`, the two version
+  badges and the "What's New" entry in `index.html`, and `CACHE_NAME` in `sw.js`.
 
 ## Layout
 - `index.html` — the whole app (owner panel, staff app, kiosk, super admin).
@@ -14,8 +14,6 @@
 - `worker/` — optional Cloudflare Worker API (not deployed yet).
 
 ## Pending requests (do in the next update, then remove from here)
-- Show the app version number right beside the logo in the top bar (owner,
-  staff and kiosk screens), so it's easy to check a phone is updated.
 - Tab bar runs off the right edge on phones (Payroll/Staff/Settings hidden
   until swiped): two rows, or a fade + arrow hint. Owner to choose.
 - Security fix (high priority): Firestore rules are fully open and owner
