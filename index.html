@@ -47,7 +47,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.22.3';
+const APP_VERSION = 'v1.22.4';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -832,6 +832,7 @@ function punchLinesHtml(r,extra){
 async function renderMyHistory(){
   const now=new Date(),d=new Date(now.getFullYear(),now.getMonth()+myMonthOff,1);
   document.getElementById('my-month-lbl').textContent=d.toLocaleString('default',{month:'long',year:'numeric'});
+  setNextDisabled('button[onclick="changeMyMonth(1)"]',myMonthOff>=0);
   setLoading(true,'Loading history…');
   try{
     const prefix=`${d.getFullYear()}-${pad(d.getMonth()+1)}`;
@@ -864,7 +865,7 @@ async function renderMyHistory(){
   }catch(e){document.getElementById('my-log').innerHTML='<div class="empty-state">Error loading history</div>';}
   setLoading(false);
 }
-window.changeMyMonth=function(d){myMonthOff+=d;renderMyHistory();};
+window.changeMyMonth=function(d){if(myMonthOff+d>0)return;myMonthOff+=d;renderMyHistory();};
 
 // ─────────────────────────────────────────────
 //  OWNER LOGIN
@@ -932,8 +933,7 @@ window.showOwnerTab=function(tab,btn){
   if(tab==='reports')renderReport();
   if(tab==='payroll'){populatePayrollDropdowns();renderPayHistory();renderAdvList();}
   if(tab==='staff')renderStaffList();
-  if(tab==='settings'){loadOwnerSettings();renderHolidayList();}
-  if(tab==='qr')renderQRCode();
+  if(tab==='settings'){loadOwnerSettings();renderHolidayList();renderQRCode();}
   if(tab==='fix')renderFixList();
 };
 
@@ -948,7 +948,7 @@ function fixMonthInfo(){
   var prefix=d.getFullYear()+'-'+pad(d.getMonth()+1);
   return {prefix:prefix,label:d.toLocaleString('default',{month:'long',year:'numeric'})};
 }
-window.changeFixMonth=function(n){fixMonthOff+=n;renderFixList();};
+window.changeFixMonth=function(n){if(fixMonthOff+n>0)return;fixMonthOff+=n;renderFixList();};
 
 // "Needs a check" flags: not errors, but days that usually mean a missed punch.
 // ctx: {stdMins, startTime, off}; off = leave/holiday/weekly off → no review flags.
@@ -1006,6 +1006,7 @@ window.renderFixList=async function(){
   var el=document.getElementById('fix-list');if(!el)return;
   var info=fixMonthInfo();
   document.getElementById('fix-month-lbl').textContent=info.label;
+  setNextDisabled('button[onclick="changeFixMonth(1)"]',fixMonthOff>=0);
   var sel=document.getElementById('fix-staff');
   var cur=sel.value||'all';
   sel.innerHTML='<option value="all">All Staff</option>'+staffArr.map(function(s){
@@ -1653,6 +1654,7 @@ window.renderReport=async function(){
   const sid=v('report-staff');
   const now=new Date(),d=new Date(now.getFullYear(),now.getMonth()+reportMonthOff,1);
   document.getElementById('report-month-lbl').textContent=d.toLocaleString('default',{month:'long',year:'numeric'});
+  setNextDisabled('button[onclick="changeReportMonth(1)"]',reportMonthOff>=0);
   setLoading(true,'Loading report…');
   try{
     const prefix=d.getFullYear()+'-'+pad(d.getMonth()+1);
@@ -1755,7 +1757,7 @@ window.renderReport=async function(){
   }catch(e){document.getElementById('report-log').innerHTML='<div class="empty-state">Error: '+e.message+'</div>';}
   setLoading(false);
 };
-window.changeReportMonth=function(d){reportMonthOff+=d;renderReport();};
+window.changeReportMonth=function(d){if(reportMonthOff+d>0)return;reportMonthOff+=d;renderReport();};
 
 // ─────────────────────────────────────────────
 //  EXPORT — CSV + PDF
@@ -1902,6 +1904,8 @@ async function populatePayrollDropdowns(){
 }
 
 // Payroll opens on last month (the one normally being paid)
+// Grey out a "next month" button when the view is already on the current month
+function setNextDisabled(sel,atCurrent){document.querySelectorAll(sel).forEach(function(b){b.disabled=!!atCurrent;});}
 function prevMonthKey(){var n=new Date();var d=new Date(n.getFullYear(),n.getMonth()-1,1);return d.getFullYear()+'-'+pad(d.getMonth()+1);}
 function curMonthKey(){var n=new Date();return n.getFullYear()+'-'+pad(n.getMonth()+1);}
 function updatePayMonthDisplay(){
@@ -1912,6 +1916,7 @@ function updatePayMonthDisplay(){
   var parts=pm.value.split('-');
   var d=new Date(parseInt(parts[0]),parseInt(parts[1])-1,1);
   disp.textContent=d.toLocaleString('default',{month:'long',year:'numeric'});
+  setNextDisabled('button[onclick="changePayMonth(1)"]',pm.value>=curMonthKey());
   var badge=document.getElementById('pay-month-badge');
   if(badge){
     var cur=curMonthKey();
@@ -1926,7 +1931,9 @@ window.changePayMonth=function(dir){
   if(!pm.value){var n=new Date();pm.value=n.getFullYear()+'-'+pad(n.getMonth()+1);}
   var parts=pm.value.split('-');
   var d=new Date(parseInt(parts[0]),parseInt(parts[1])-1+dir,1);
-  pm.value=d.getFullYear()+'-'+pad(d.getMonth()+1);
+  var nk=d.getFullYear()+'-'+pad(d.getMonth()+1);
+  if(nk>curMonthKey())return; // future months have no attendance yet
+  pm.value=nk;
   updatePayMonthDisplay();
   var advInput=document.getElementById('pay-advance-recover');
   if(advInput) delete advInput.dataset.userEdited;
@@ -4256,6 +4263,19 @@ textarea.form-input{resize:none;}
 .req-card-title{font-weight:700;font-size:13px;}
 .req-card-meta{font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.5;}
 .req-card-actions{display:flex;gap:8px;}
+.set-group{background:var(--s1);border:1px solid var(--border);border-radius:var(--r);margin-bottom:12px;overflow:hidden;}
+.set-group>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:12px;padding:16px 44px 16px 16px;position:relative;}
+.set-group>summary::-webkit-details-marker{display:none;}
+.set-group>summary::after{content:'▸';position:absolute;right:18px;top:50%;transform:translateY(-50%);color:var(--muted);transition:transform .15s;}
+.set-group[open]>summary::after{transform:translateY(-50%) rotate(90deg);}
+.set-group[open]>summary{border-bottom:1px solid var(--border);}
+.sg-icon{font-size:22px;flex-shrink:0;}
+.sg-text{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.sg-title{font-family:var(--fh);font-weight:800;font-size:15px;}
+.sg-sub{font-size:12px;color:var(--muted);}
+.sg-body{padding:12px 12px 2px;}
+.sg-body>.card{background:var(--s2);margin-bottom:12px;}
+.month-nav button:disabled,.btn:disabled{opacity:.3;cursor:not-allowed;}
 .pay-month-badge{margin-top:10px;font-size:12px;font-weight:700;border-radius:10px;padding:8px 12px;}
 .pay-month-badge.cur{color:var(--accent);background:rgba(245,166,35,.12);border:1px solid rgba(245,166,35,.35);}
 .pay-month-badge.fut{color:var(--muted);background:var(--s2);border:1px solid var(--border);}
@@ -4314,7 +4334,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.22.3</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.22.4</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4554,7 +4574,6 @@ textarea.form-input{resize:none;}
       <button class="tab" data-tab="payroll" onclick="showOwnerTab('payroll',this)">💰 Payroll</button>
       <button class="tab" onclick="showOwnerTab('staff',this)">Staff</button>
       <button class="tab" onclick="showOwnerTab('settings',this)">Settings</button>
-      <button class="tab" onclick="showOwnerTab('qr',this)">QR</button>
     </div>
     <!-- TODAY -->
     <div class="page active" id="owner-today">
@@ -4716,6 +4735,10 @@ textarea.form-input{resize:none;}
     </div>
     <!-- SETTINGS -->
     <div class="page" id="owner-settings">
+      <p style="font-size:12px;color:var(--muted);margin:2px 4px 12px;">Tap a section to open it.</p>
+      <details class="set-group">
+        <summary><span class="sg-icon">🏪</span><span class="sg-text"><span class="sg-title">Business</span><span class="sg-sub">Name, location, punch-in time, store GPS</span></span></summary>
+        <div class="sg-body">
       <div class="card">
         <div class="card-title">Business Settings</div>
         <div class="form-group"><label class="form-label">Business Name</label><input class="form-input" id="set-biz-name"></div>
@@ -4724,6 +4747,25 @@ textarea.form-input{resize:none;}
         <button class="btn btn-primary btn-sm" onclick="saveBizSettings()">Save Settings</button>
       </div><!-- /card business settings -->
 
+      <div class="card">
+        <div class="card-title">📍 Store Location (GPS Check)</div>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Staff punching from outside this radius will be flagged ⚠️ for review.</p>
+        <div class="two-col">
+          <div class="form-group"><label class="form-label">Latitude</label><input type="number" step="any" class="form-input" id="set-store-lat" placeholder="e.g. 19.2813"></div>
+          <div class="form-group"><label class="form-label">Longitude</label><input type="number" step="any" class="form-input" id="set-store-lng" placeholder="e.g. 73.0479"></div>
+        </div>
+        <div class="form-group"><label class="form-label">Allowed Radius (meters)</label><input type="number" class="form-input" id="set-store-radius" placeholder="300" value="300"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-primary btn-sm" onclick="saveStoreLocation()">Save Location</button>
+          <button class="btn btn-ghost btn-sm" onclick="detectStoreLocation()">📍 Use My Current Location</button>
+        </div>
+        <p style="font-size:11px;color:var(--muted);margin-top:8px;" id="store-loc-status"></p>
+      </div><!-- /card store location -->
+        </div>
+      </details>
+      <details class="set-group">
+        <summary><span class="sg-icon">💰</span><span class="sg-text"><span class="sg-title">Pay, Holidays &amp; Leave</span><span class="sg-sub">Pay rules, yearly holiday list, staff leave</span></span></summary>
+        <div class="sg-body">
       <div class="card">
         <div class="card-title">💰 Pay Rules</div>
         <div class="form-group"><label class="form-label">Weekly Offs</label>
@@ -4746,52 +4788,6 @@ textarea.form-input{resize:none;}
       </div>
 
       <div class="card">
-        <div class="card-title">📍 Store Location (GPS Check)</div>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Staff punching from outside this radius will be flagged ⚠️ for review.</p>
-        <div class="two-col">
-          <div class="form-group"><label class="form-label">Latitude</label><input type="number" step="any" class="form-input" id="set-store-lat" placeholder="e.g. 19.2813"></div>
-          <div class="form-group"><label class="form-label">Longitude</label><input type="number" step="any" class="form-input" id="set-store-lng" placeholder="e.g. 73.0479"></div>
-        </div>
-        <div class="form-group"><label class="form-label">Allowed Radius (meters)</label><input type="number" class="form-input" id="set-store-radius" placeholder="300" value="300"></div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn btn-primary btn-sm" onclick="saveStoreLocation()">Save Location</button>
-          <button class="btn btn-ghost btn-sm" onclick="detectStoreLocation()">📍 Use My Current Location</button>
-        </div>
-        <p style="font-size:11px;color:var(--muted);margin-top:8px;" id="store-loc-status"></p>
-      </div><!-- /card store location -->
-
-      <div class="card">
-        <div class="card-title">Staff Company Code</div>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Share this code with your staff. They enter it once to connect their phone.</p>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <div id="company-code-display" style="flex:1;background:var(--s2);border:1.5px solid var(--border);border-radius:var(--rs);padding:14px;font-size:22px;font-family:var(--fh);font-weight:800;letter-spacing:4px;text-align:center;color:var(--accent);"></div>
-          <button class="btn btn-ghost btn-sm" onclick="shareCompanyCode()">Share</button>
-        </div>
-      </div><!-- /card company code -->
-
-      <div class="card">
-        <div class="card-title">Business ID</div>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:8px;">Share with staff to connect new devices.</p>
-        <div style="display:flex;gap:8px;align-items:center;">
-          <div id="biz-id-display" style="flex:1;background:var(--s2);border:1.5px solid var(--border);border-radius:var(--rs);padding:11px 13px;font-size:12px;font-family:monospace;color:var(--muted);word-break:break-all;"></div>
-          <button class="btn btn-ghost btn-sm" onclick="copyBizId()">Copy</button>
-        </div>
-      </div><!-- /card biz id -->
-
-      <div class="card">
-        <div class="card-title">Change Owner Password</div>
-        <div class="form-group"><label class="form-label">New Password</label><input type="password" class="form-input" id="set-owner-pass"></div>
-        <button class="btn btn-secondary btn-sm" onclick="changeOwnerPass()">Update Password</button>
-      </div><!-- /card change pass -->
-
-      <div class="card">
-        <div class="card-title">🖥️ Kiosk PIN</div>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Staff enter this PIN on the shared kiosk device to access punch mode. Keep it different from your owner password.</p>
-        <div class="form-group"><label class="form-label">Kiosk PIN (4–6 digits)</label><input type="password" class="form-input" id="set-kiosk-pin" placeholder="e.g. 1234" inputmode="numeric" maxlength="6"></div>
-        <button class="btn btn-secondary btn-sm" onclick="saveKioskPin()">Set Kiosk PIN</button>
-      </div><!-- /card kiosk pin -->
-
-      <div class="card">
         <div class="card-title">🎉 Shop Holidays</div>
         <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Holidays apply to all staff and are paid as set in Pay Rules.</p>
         <div class="month-nav" style="margin-bottom:10px;"><button onclick="changeHolYear(-1)">‹</button><span id="hol-year-lbl"></span><button onclick="changeHolYear(1)">›</button></div>
@@ -4810,7 +4806,7 @@ textarea.form-input{resize:none;}
       </div>
 
       <div class="card">
-        <div class="card-title">Mark Holiday / Leave</div>
+        <div class="card-title">Mark Leave / Single Holiday</div>
         <div class="form-group"><label class="form-label">Date</label><input type="date" class="form-input" id="mark-date"></div>
         <div class="form-group"><label class="form-label">Type</label>
           <select class="form-input form-select" id="mark-type" onchange="toggleMarkStaff()">
@@ -4829,7 +4825,11 @@ textarea.form-input{resize:none;}
         <div class="form-group"><label class="form-label">Note</label><input class="form-input" id="mark-note" placeholder="e.g. Diwali, Sick leave"></div>
         <button class="btn btn-primary" onclick="markDay()">Mark Day</button>
       </div><!-- /card mark holiday -->
-
+        </div>
+      </details>
+      <details class="set-group">
+        <summary><span class="sg-icon">🕒</span><span class="sg-text"><span class="sg-title">Attendance</span><span class="sg-sub">Add a punch manually</span></span></summary>
+        <div class="sg-body">
       <div class="card">
         <div class="card-title">Manual Attendance Entry</div>
         <div class="form-group"><label class="form-label">Staff</label><select class="form-input form-select" id="manual-staff"></select></div>
@@ -4840,10 +4840,29 @@ textarea.form-input{resize:none;}
         </div>
         <button class="btn btn-primary" onclick="manualEntry()">Save Entry</button>
       </div><!-- /card manual entry -->
+        </div>
+      </details>
+      <details class="set-group">
+        <summary><span class="sg-icon">📲</span><span class="sg-text"><span class="sg-title">Staff Phones &amp; Shop Phone</span><span class="sg-sub">Company code, business ID, store QR, kiosk PIN</span></span></summary>
+        <div class="sg-body">
+      <div class="card">
+        <div class="card-title">Staff Company Code</div>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Share this code with your staff. They enter it once to connect their phone.</p>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <div id="company-code-display" style="flex:1;background:var(--s2);border:1.5px solid var(--border);border-radius:var(--rs);padding:14px;font-size:22px;font-family:var(--fh);font-weight:800;letter-spacing:4px;text-align:center;color:var(--accent);"></div>
+          <button class="btn btn-ghost btn-sm" onclick="shareCompanyCode()">Share</button>
+        </div>
+      </div><!-- /card company code -->
 
-    </div><!-- /page owner-settings -->
-    <!-- QR -->
-    <div class="page" id="owner-qr">
+      <div class="card">
+        <div class="card-title">Business ID</div>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:8px;">Share with staff to connect new devices.</p>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <div id="biz-id-display" style="flex:1;background:var(--s2);border:1.5px solid var(--border);border-radius:var(--rs);padding:11px 13px;font-size:12px;font-family:monospace;color:var(--muted);word-break:break-all;"></div>
+          <button class="btn btn-ghost btn-sm" onclick="copyBizId()">Copy</button>
+        </div>
+      </div><!-- /card biz id -->
+
       <div class="card" style="text-align:center;">
         <div class="card-title">Store QR Code</div>
         <p style="color:var(--muted);font-size:13px;margin-bottom:18px;">Print &amp; stick at the counter. Staff scan this before punching in/out.</p>
@@ -4851,7 +4870,26 @@ textarea.form-input{resize:none;}
         <p style="font-size:12px;color:var(--muted);margin-bottom:14px;" id="qr-label-text"></p>
         <button class="btn btn-primary" onclick="printQR()">🖨️ Print QR Code</button>
       </div>
-    </div>
+
+      <div class="card">
+        <div class="card-title">🖥️ Kiosk PIN</div>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Staff enter this PIN on the shared kiosk device to access punch mode. Keep it different from your owner password.</p>
+        <div class="form-group"><label class="form-label">Kiosk PIN (4–6 digits)</label><input type="password" class="form-input" id="set-kiosk-pin" placeholder="e.g. 1234" inputmode="numeric" maxlength="6"></div>
+        <button class="btn btn-secondary btn-sm" onclick="saveKioskPin()">Set Kiosk PIN</button>
+      </div><!-- /card kiosk pin -->
+        </div>
+      </details>
+      <details class="set-group">
+        <summary><span class="sg-icon">🔐</span><span class="sg-text"><span class="sg-title">Security</span><span class="sg-sub">Owner password</span></span></summary>
+        <div class="sg-body">
+      <div class="card">
+        <div class="card-title">Change Owner Password</div>
+        <div class="form-group"><label class="form-label">New Password</label><input type="password" class="form-input" id="set-owner-pass"></div>
+        <button class="btn btn-secondary btn-sm" onclick="changeOwnerPass()">Update Password</button>
+      </div><!-- /card change pass -->
+        </div>
+      </details>
+    </div><!-- /page owner-settings -->
   </div><!-- /owner-panel-wrap -->
 </div><!-- /screen-owner -->
 
@@ -5278,7 +5316,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.22.3</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.22.4</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -5286,11 +5324,23 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.22.4 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.22.4</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Settings organised into 5 sections — Business, Pay/Holidays/Leave, Attendance, Staff Phones &amp; Shop Phone, Security — tap to open</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Store QR code moved into Settings → Staff Phones &amp; Shop Phone (the QR tab is gone, so the tab bar is shorter)</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Fix, Reports, Payroll and staff history no longer go past the current month</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.22.3 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.22.3</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.22.3</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Requests count from the date they were made, everywhere: the Inbox files them by request date, and an advance approved later is dated by its request</span></div>
