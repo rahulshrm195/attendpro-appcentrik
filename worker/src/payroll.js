@@ -83,9 +83,14 @@ export function computePayroll(a) {
       continue;
     }
     if (mark && (mark.type === 'holiday' || mark.type === 'leave')) {
-      offDays++;
-      if (mark.type === 'leave' && mark.paidLeave) paidLeaveDays++;
-      continue;
+      // Half-day / custom-hours leave on a day they also worked: hours still count
+      const partLeave = mark.type === 'leave' && (mark.leaveType === 'half' || mark.leaveType === 'custom');
+      if (!(partLeave && rec && rec.inTime)) {
+        offDays++;
+        if (mark.type === 'leave' && mark.paidLeave) paidLeaveDays++;
+        continue;
+      }
+      if (mark.paidLeave && mark.leaveType === 'half') paidLeaveDays += 0.5;
     }
     workDays++;
     if (rec && rec.inTime) {
@@ -137,7 +142,7 @@ export function computePayroll(a) {
   const defaultRecover = totalOutstanding > 0 ? (thisMonthTotal > 0 ? thisMonthTotal : totalOutstanding) : 0;
   const advRecover = Math.min(a.advanceRecover != null ? a.advanceRecover : defaultRecover, totalOutstanding);
 
-  const paidLeaveAmt = paidLeaveDays * perDay;
+  const paidLeaveAmt = Math.round(paidLeaveDays * perDay);
   const gross = Math.max(0, basePay + otPay + incentive + weeklyOffBonus + woPay + paidLeaveAmt - lateD);
   const advActual = Math.min(advRecover, gross);
   const net = Math.max(0, gross - advActual);
