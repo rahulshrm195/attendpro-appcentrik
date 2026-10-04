@@ -944,6 +944,13 @@ window.renderFixList=async function(){
       return;
     }
     sumEl.innerHTML='<span style="color:var(--red);font-weight:700;">'+bad.length+' day'+(bad.length!==1?'s':'')+' need fixing</span> out of '+recs.length+' records';
+    fixPlans=[];
+    bad.forEach(function(b){if(b.rec.date<today){var pl=planDoubleTapFix(b.rec);if(pl)fixPlans.push(pl);}});
+    if(fixPlans.length){
+      var nSess=fixPlans.reduce(function(a,pl){return a+pl.removed.length;},0);
+      sumEl.innerHTML+='<button class="btn btn-primary" style="margin-top:12px;" onclick="applyDoubleTapFix()">⚡ Auto-fix double taps ('+nSess+' extra session'+(nSess!==1?'s':'')+' on '+fixPlans.length+' day'+(fixPlans.length!==1?'s':'')+')</button>'+
+        '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Removes only clear duplicates. Missing punch-outs and unclear days stay for you to fix.</div>';
+    }
     el.innerHTML=bad.map(function(b){
       var r=b.rec,sid=ksEsc(r.staffId),date=ksEsc(r.date);
       var name=r.staffName||((staffArr.find(function(s){return s.id===r.staffId;})||{}).name)||r.staffId;
@@ -973,6 +980,68 @@ window.renderFixList=async function(){
   }catch(e){
     el.innerHTML='<div class="empty-state">Could not load attendance: '+ksEsc(e.message)+'</div>';
   }
+};
+
+// ── Auto-fix double taps ──
+// Sessions starting within 2 min of each other form a cluster. Keep one per cluster:
+//  • exactly one has a punch-out → keep it
+//  • none has a punch-out and it's the day's last cluster → keep the first (owner adds punch-out)
+//  • otherwise (two different punch-outs, or open in the middle) → leave for manual fix
+var fixPlans=[];
+function planDoubleTapFix(rec){
+  var ss=Array.isArray(rec.sessions)?rec.sessions:[];
+  if(ss.length<2)return null;
+  var t=function(s){return s.inISO?new Date(s.inISO).getTime():NaN;};
+  var clusters=[],cur=null;
+  ss.forEach(function(s,i){
+    if(cur&&!isNaN(t(s))&&!isNaN(t(ss[cur[0]]))&&Math.abs(t(s)-t(ss[cur[0]]))<120000)cur.push(i);
+    else{cur=[i];clusters.push(cur);}
+  });
+  var keep=[],removed=[];
+  clusters.forEach(function(c,ci){
+    if(c.length===1){keep.push(c[0]);return;}
+    var closed=c.filter(function(i){return !!ss[i].outTime;});
+    var pick=null;
+    if(closed.length===1)pick=closed[0];
+    else if(closed.length===0&&ci===clusters.length-1)pick=c[0];
+    if(pick==null){c.forEach(function(i){keep.push(i);});return;}
+    keep.push(pick);
+    c.forEach(function(i){if(i!==pick)removed.push(i);});
+  });
+  if(!removed.length)return null;
+  return {rec:rec,keep:keep,removed:removed};
+}
+
+window.applyDoubleTapFix=async function(){
+  if(!fixPlans.length)return;
+  var nSess=fixPlans.reduce(function(a,pl){return a+pl.removed.length;},0);
+  if(!confirm('Remove '+nSess+' duplicate session'+(nSess!==1?'s':'')+' on '+fixPlans.length+' day'+(fixPlans.length!==1?'s':'')+'?\n\nOnly clear double taps are removed. Days with a missing punch-out or unclear times stay in the list for you to fix.'))return;
+  setLoading(true,'Fixing double taps…');
+  var done=0,failed=0;
+  for(var k=0;k<fixPlans.length;k++){
+    var pl=fixPlans[k],r=pl.rec,ss=r.sessions;
+    var sessions=pl.keep.map(function(i){return ss[i];});
+    var total=sessions.reduce(function(a,s){return a+(s.workedMins||0);},0);
+    var removedLog=(Array.isArray(r.removedDuplicates)?r.removedDuplicates:[]).concat(pl.removed.map(function(i){
+      var s=ss[i];return {inTime:s.inTime||'',inISO:s.inISO||'',outTime:s.outTime||'',outISO:s.outISO||'',removedAt:new Date().toISOString()};
+    }));
+    try{
+      await updateDoc(doc(db,p.rec(r.staffId,r.date)),{
+        sessions:sessions,
+        inTime:sessions[0].inTime,
+        outTime:sessions[sessions.length-1].outTime||'',
+        workedMins:total,
+        workedDisplay:Math.floor(total/60)+'h '+(total%60)+'m',
+        manualEdit:true,
+        removedDuplicates:removedLog,
+        _updatedAt:serverTimestamp()
+      });
+      done++;
+    }catch(e){failed++;}
+  }
+  setLoading(false);
+  toast(failed?('Fixed '+done+' day'+(done!==1?'s':'')+', '+failed+' failed — try again'):'✓ Fixed '+done+' day'+(done!==1?'s':''),!!failed);
+  renderFixList();
 };
 
 window.fixRemoveSession=function(staffId,date,idx){
@@ -3706,7 +3775,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.20.0</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.20.1</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4630,7 +4699,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.20.0</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.20.1</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -4638,11 +4707,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.20.1 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.20.1</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>⚡ Auto-fix double taps — removes all clear duplicate sessions for the month in one tap; unclear days stay for you to check</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.20.0 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.20.0</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.20.0</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>New 🛠️ Fix tab — finds double taps, missing punch-outs and overlapping sessions for any month</span></div>
