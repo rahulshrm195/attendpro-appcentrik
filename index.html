@@ -1563,7 +1563,7 @@ window.approveReq=async function(id){
       const ledger=await fbGet(p.advLedger(r.staffId)).catch(()=>null);
       const prev=ledger&&ledger.balance>0?ledger.balance:0;
       await fbSet(p.advLedger(r.staffId),{staffId:r.staffId,staffName:r.staffName,balance:prev+r.amount,lastUpdated:new Date().toISOString()});
-      await fbAdd(p.advLedgerLog(),{type:'given',amount:r.amount,date:new Date().toISOString().split('T')[0],note:'Approved request: '+(r.reason||''),balanceBefore:prev,balanceAfter:prev+r.amount,ts:Date.now()});
+      await fbAdd(p.advLedgerLog(),{type:'given',staffId:r.staffId,staffName:r.staffName,amount:r.amount,date:new Date().toISOString().split('T')[0],note:'Approved request: '+(r.reason||''),balanceBefore:prev,balanceAfter:prev+r.amount,ts:Date.now()});
     }
     if(r.type==='leave'){
       const days=getDayRange(r.from,r.to);
@@ -1829,14 +1829,20 @@ async function populatePayrollDropdowns(){
       if(ledger&&ledger.balance>0) advMap[active[i].id]=ledger.balance;
     });
   }catch(e){}
+  const inactive=staffArr.filter(s=>!s.active);
   ['pay-staff-sel','adv-staff-sel'].forEach(function(id){
     const el=document.getElementById(id);if(!el)return;
     const cur=el.value;
-    el.innerHTML='<option value="">Select…</option>';
+    var html='<option value="">Select…</option>';
     active.forEach(function(s){
       const badge=advMap[s.id]?' ⚠️ ₹'+advMap[s.id].toLocaleString('en-IN')+' adv':'';
-      el.innerHTML+='<option value="'+s.id+'">'+s.name+badge+'</option>';
+      html+='<option value="'+ksEsc(s.id)+'">'+ksEsc(s.name)+badge+'</option>';
     });
+    // Inactive staff only in Payroll, for their final settlement
+    if(id==='pay-staff-sel')inactive.forEach(function(s){
+      html+='<option value="'+ksEsc(s.id)+'">'+ksEsc(s.name)+' (inactive)</option>';
+    });
+    el.innerHTML=html;
     if(cur)el.value=cur;
   });
   const pm=document.getElementById('pay-month');
@@ -1868,16 +1874,32 @@ window.changePayMonth=function(dir){
   renderPayroll();
 };
 
+var payCtxKey='';
 window.renderPayroll=async function(){
   const sid=v('pay-staff-sel'),mv=v('pay-month');
   const out=document.getElementById('payroll-output');
   if(!sid||!mv){out.style.display='none';return;}
+  // Incentive / advance inputs belong to one staff + month: reset when either changes
+  const incInp=document.getElementById('pay-incentive-inp');
+  const advInp0=document.getElementById('pay-advance-recover');
+  const ctxKey=sid+'|'+mv;
+  const newCtx=ctxKey!==payCtxKey;
+  if(newCtx){
+    payCtxKey=ctxKey;
+    if(incInp)incInp.value='';
+    if(advInp0){advInp0.value='';delete advInp0.dataset.userEdited;}
+  }
   const [year,month]=[parseInt(mv.split('-')[0]),parseInt(mv.split('-')[1])-1];
   const staff=staffArr.find(function(s){return s.id===sid;});if(!staff){out.style.display='none';return;}
   out.style.display='block';
   setLoading(true,'Calculating payroll…');
   try{
     const cfg=await getSalaryCfg(sid);
+    const payRec=await fbGet(p.payment(sid,mv)).catch(()=>null);
+    if(newCtx&&payRec){
+      if(incInp)incInp.value=payRec.incentive||'';
+      if(advInp0&&payRec.advRecovered!=null){advInp0.value=payRec.advRecovered;advInp0.dataset.userEdited='1';}
+    }
     const joiningDate=staff.joiningDate||null;
     const prefix=year+'-'+pad(month+1);
     const ml=new Date(year,month,1).toLocaleString('default',{month:'long',year:'numeric'});
@@ -1934,10 +1956,16 @@ window.renderPayroll=async function(){
         continue;
       }
       if(mark&&(mark.type==='holiday'||mark.type==='leave')){
-        offDays++;
-        // Paid leave — count separately, NOT added to totalWorkedMins (added to net directly)
-        if(mark.type==='leave'&&mark.paidLeave) paidLeaveDays++;
-        continue;
+        // Half-day / custom-hours leave on a day they also worked: the worked
+        // hours still count (falls through below); paid half-day adds ½ day.
+        var partLeave=mark.type==='leave'&&(mark.leaveType==='half'||mark.leaveType==='custom');
+        if(!(partLeave&&rec&&rec.inTime)){
+          offDays++;
+          // Paid leave — count separately, NOT added to totalWorkedMins (added to net directly)
+          if(mark.type==='leave'&&mark.paidLeave) paidLeaveDays++;
+          continue;
+        }
+        if(mark.paidLeave&&mark.leaveType==='half') paidLeaveDays+=0.5;
       }
       workDays++;
       if(rec&&rec.inTime){
@@ -2014,7 +2042,9 @@ window.renderPayroll=async function(){
 
     // ── Advance Ledger — single source of truth is advLedger balance ──
     const ledger=await fbGet(p.advLedger(sid)).catch(()=>null);
-    const totalOutstanding=ledger&&ledger.balance>0?ledger.balance:0;
+    const curBalance=ledger&&ledger.balance>0?ledger.balance:0;
+    // For a paid month, add back what that payment recovered: the balance before it
+    const totalOutstanding=curBalance+(payRec?(payRec.advRecovered||0):0);
     // Split advances: this month vs carry-forward
     const allAdvs=await fbList(p.advances(),where('staffId','==',sid)).catch(function(){return [];});
     const thisMonthAdvs=allAdvs.filter(function(a){return a.date&&a.date.startsWith(prefix);});
@@ -2044,7 +2074,7 @@ window.renderPayroll=async function(){
     }
 
     const advRecover=Math.min(parseInt(advInput&&advInput.value)||0, totalOutstanding);
-    var paidLeaveAmt=paidLeaveDays*perDay;
+    var paidLeaveAmt=Math.round(paidLeaveDays*perDay);
     const netBeforeAdv=Math.max(0,basePay+otPay+incentive+weeklyOffBonus+woPay+paidLeaveAmt-lateD);
     const advActual=Math.min(advRecover,netBeforeAdv);
     const net=Math.max(0,netBeforeAdv-advActual);
@@ -2107,9 +2137,11 @@ window.renderPayroll=async function(){
       if(paidLeaveDays>0){
         plRow.style.display='flex';
         R('pb-paidleave-lbl','Paid Leave ('+paidLeaveDays+' day'+(paidLeaveDays>1?'s':'')+' × ₹'+perDay+')');
-        R('pb-paidleave','+₹'+(paidLeaveDays*perDay).toLocaleString('en-IN'));
+        R('pb-paidleave','+₹'+paidLeaveAmt.toLocaleString('en-IN'));
       } else plRow.style.display='none';
     }
+    R('pb-late-lbl','Late ('+late+' day'+(late!==1?'s':'')+(cfg.lateRule==='fixed'?' × ₹'+(cfg.lateAmount||0):cfg.lateRule==='halfday'?' · ½ day per '+(cfg.lateHalfAfter||3)+' late':'')+')');
+    R('pb-late','−₹'+lateD.toLocaleString('en-IN'));
     R('pb-advance','−₹'+advActual.toLocaleString('en-IN'));
     if(advCarryFwd>0) R('pb-adv-carry','⚠️ ₹'+advCarryFwd.toLocaleString('en-IN')+' carries forward');
     else R('pb-adv-carry','✓ Advance fully cleared');
@@ -2126,28 +2158,8 @@ window.renderPayroll=async function(){
     out.dataset.advActual=advActual;
     out.dataset.advCarryFwd=advCarryFwd;
     out.dataset.totalOutstanding=totalOutstanding;
-    const payRec=await fbGet(p.payment(sid,mv)).catch(()=>null);
     const badge=document.getElementById('pay-status-badge');
     if(badge)badge.innerHTML=payRec?'<span class="status-approved">✓ Paid '+payRec.date+' via '+payRec.mode+'</span>':'<span class="status-pending">Unpaid</span>';
-    // If already paid — restore incentive and advance from payment record
-    if(payRec&&advInput){
-      // Restore incentive
-      if(payRec.incentive){
-        var incInp=document.getElementById('pay-incentive-inp');
-        if(incInp){incInp.value=payRec.incentive;}
-      }
-      // Restore advance recovered
-      if(payRec.advRecovered){
-        advInput.value=payRec.advRecovered;
-        advInput.dataset.userEdited='1';
-        var savedAdv=payRec.advRecovered;
-        var savedNet=Math.max(0,netBeforeAdv-savedAdv);
-        R('pay-net-amount','₹'+savedNet.toLocaleString('en-IN'));
-        R('pb-net','₹'+savedNet.toLocaleString('en-IN'));
-        R('pb-advance','−₹'+savedAdv.toLocaleString('en-IN'));
-        R('pb-gross','₹'+netBeforeAdv.toLocaleString('en-IN'));
-      }
-    }
   }catch(e){toast('Payroll error: '+e.message,true);}
   setLoading(false);
 };
@@ -2159,26 +2171,38 @@ window.markAsPaid=async function(){
   const net=document.getElementById('pb-net').textContent;
   const mode=v('pay-mode'),note=v('pay-note');
   const advActual=parseInt(out.dataset.advActual)||0;
-  const advCarryFwd=parseInt(out.dataset.advCarryFwd)||0;
-  const totalOutstanding=parseInt(out.dataset.totalOutstanding)||0;
   const incentiveSaved=parseInt(v('pay-incentive-inp'))||0;
-  const staffName=staffArr.find(function(s){return s.id===sid;})&&staffArr.find(function(s){return s.id===sid;}).name;
-  const payRec={staffId:sid,staffName:staffName,month:mv,net,mode,note,advRecovered:advActual,advCarryFwd:advCarryFwd,incentive:incentiveSaved,date:new Date().toLocaleDateString('en-IN'),ts:Date.now()};
+  const staffName=(staffArr.find(function(s){return s.id===sid;})||{}).name||sid;
   setLoading(true,'Recording payment…');
   try{
-    await fbSet(p.payment(sid,mv),payRec);
-    await fbAdd(p.payHist(),payRec);
-    if(totalOutstanding>0){
-      await fbSet(p.advLedger(sid),{staffId:sid,staffName:staffName,balance:advCarryFwd,lastUpdated:new Date().toISOString(),lastMonth:mv});
-      await fbAdd(p.advLedgerLog(),{type:'recovery',month:mv,recovered:advActual,balanceBefore:totalOutstanding,balanceAfter:advCarryFwd,date:new Date().toLocaleDateString('en-IN'),ts:Date.now()});
+    const prev=await fbGet(p.payment(sid,mv)).catch(()=>null);
+    if(prev&&!confirm(staffName+' was already marked paid on '+prev.date+' ('+prev.net+').\n\nUpdate that payment? The advance balance will be corrected, not deducted twice.')){setLoading(false);return;}
+    // Balance before this month's recovery = current balance + what an earlier save of this month recovered
+    const ledger=await fbGet(p.advLedger(sid)).catch(()=>null);
+    const curBal=ledger&&ledger.balance>0?ledger.balance:0;
+    const prevRecovered=prev?(prev.advRecovered||0):0;
+    const balBefore=curBal+prevRecovered;
+    const recovered=Math.min(advActual,balBefore);
+    const balAfter=balBefore-recovered;
+    const histRef=prev&&prev.histId?doc(db,p.payHist()+'/'+prev.histId):doc(collection(db,p.payHist()));
+    const payRec={staffId:sid,staffName:staffName,month:mv,net,netAmount:parseInt(String(net).replace(/[^0-9]/g,''))||0,
+      mode,note,advRecovered:recovered,advCarryFwd:balAfter,balanceBefore:balBefore,incentive:incentiveSaved,
+      date:new Date().toLocaleDateString('en-IN'),ts:Date.now(),histId:histRef.id,_updatedAt:serverTimestamp()};
+    if(prev)payRec.firstPaidDate=prev.firstPaidDate||prev.date;
+    const batch=writeBatch(db);
+    batch.set(doc(db,p.payment(sid,mv)),payRec);
+    batch.set(histRef,payRec);
+    if(balBefore>0||prevRecovered>0){
+      batch.set(doc(db,p.advLedger(sid)),{staffId:sid,staffName:staffName,balance:balAfter,lastUpdated:new Date().toISOString(),lastMonth:mv},{merge:true});
+      if(recovered!==prevRecovered)batch.set(doc(collection(db,p.advLedgerLog())),{type:prev?'recovery_update':'recovery',staffId:sid,staffName:staffName,month:mv,
+        recovered:recovered,previouslyRecovered:prevRecovered,balanceBefore:curBal,balanceAfter:balAfter,date:new Date().toLocaleDateString('en-IN'),ts:Date.now()});
     }
-    const advInput=document.getElementById('pay-advance-recover');
-    if(advInput) delete advInput.dataset.userEdited;
+    await batch.commit();
     await renderPayroll();
     renderPayHistory();
     renderAdvList();
     populatePayrollDropdowns();
-    toast('✓ Payment marked · Advance ledger updated');
+    toast(prev?'✓ Payment updated · Advance balance corrected':'✓ Payment marked · Advance ledger updated');
   }catch(e){toast('Error: '+e.message,true);}
   setLoading(false);
 };
@@ -2208,7 +2232,7 @@ window.giveAdvance=async function(){
     const ledger=await fbGet(p.advLedger(sid)).catch(()=>null);
     const prev=ledger&&ledger.balance>0?ledger.balance:0;
     await fbSet(p.advLedger(sid),{staffId:sid,staffName:staffName,balance:prev+amount,lastUpdated:new Date().toISOString()});
-    await fbAdd(p.advLedgerLog(),{type:'given',amount,date,note:note||'',balanceBefore:prev,balanceAfter:prev+amount,ts:Date.now()});
+    await fbAdd(p.advLedgerLog(),{type:'given',staffId:sid,staffName:staffName,amount,date,note:note||'',balanceBefore:prev,balanceAfter:prev+amount,ts:Date.now()});
     document.getElementById('adv-amount').value='';document.getElementById('adv-note').value='';
     renderAdvList();populatePayrollDropdowns();toast('✓ Advance recorded · Ledger updated');
   }catch(e){toast('Error: '+e.message,true);}
@@ -2235,7 +2259,7 @@ window.giveQuickAdvance=async function(){
     const ledger=await fbGet(p.advLedger(sid)).catch(()=>null);
     const prev=ledger&&ledger.balance>0?ledger.balance:0;
     await fbSet(p.advLedger(sid),{staffId:sid,staffName:staffName,balance:prev+amount,lastUpdated:new Date().toISOString()});
-    await fbAdd(p.advLedgerLog(),{type:'given',amount,date,note:note||'',balanceBefore:prev,balanceAfter:prev+amount,ts:Date.now()});
+    await fbAdd(p.advLedgerLog(),{type:'given',staffId:sid,staffName:staffName,amount,date,note:note||'',balanceBefore:prev,balanceAfter:prev+amount,ts:Date.now()});
     closeSheet('sheet-quick-advance');
     populatePayrollDropdowns();
     toast('✓ Advance recorded for '+staffName);
@@ -2257,13 +2281,31 @@ async function renderAdvList(){
     }
 
     const active=staffArr.filter(function(s){return s.active;});
+    // Ledger balance for everyone who has advances (and all active staff), fetched in parallel
+    var balIds=active.map(function(s){return s.id;});
+    allAdvs.forEach(function(a){if(balIds.indexOf(a.staffId)<0)balIds.push(a.staffId);});
+    var ledgersArr=await Promise.all(balIds.map(function(id){return fbGet(p.advLedger(id)).catch(function(){return null;});}));
+    var balMap={};balIds.forEach(function(id,i){var l=ledgersArr[i];balMap[id]=l&&l.balance>0?l.balance:0;});
+    // Which advances are still owed: recoveries settle the oldest first (FIFO),
+    // so the outstanding balance belongs to the most recent advances.
+    advStatus={};
+    balIds.forEach(function(id){
+      var list=allAdvs.filter(function(a){return a.staffId===id;})
+        .sort(function(a,b){return ((a.date||'')+(a.id||'')).localeCompare((b.date||'')+(b.id||''));});
+      var total=list.reduce(function(t,a){return t+(a.amount||0);},0);
+      var settled=Math.max(0,total-balMap[id]);
+      list.forEach(function(a){
+        var amt=a.amount||0;
+        if(settled>=amt){advStatus[a.id]={state:'settled',left:0};settled-=amt;}
+        else{advStatus[a.id]={state:settled>0?'partial':'pending',left:amt-settled};settled=0;}
+      });
+    });
     // Build ledger summary per staff
     var summaryHtml='<div style="margin-bottom:14px;">';
     var anyOutstanding=false;
     for(var i=0;i<active.length;i++){
       var s=active[i];
-      var ledger=await fbGet(p.advLedger(s.id)).catch(()=>null);
-      var bal=ledger&&ledger.balance>0?ledger.balance:0;
+      var bal=balMap[s.id]||0;
       if(bal>0){
         anyOutstanding=true;
         summaryHtml+='<div class="row"><div class="row-main"><div class="row-title">'+s.name+'</div>'+
@@ -2279,31 +2321,40 @@ async function renderAdvList(){
     if(!advs.length){el.innerHTML=summaryHtml+'<p style="color:var(--muted);font-size:13px;margin-top:10px;">No advance transactions yet</p>';return;}
     var logHtml='<div style="font-size:12px;font-weight:700;color:var(--muted);margin:12px 0 8px;">All Transactions</div>';
     advs.slice(0,30).forEach(function(a){
-      var settled=a.recovered===true;
-      var statusHtml=settled?
+      var st=advStatus[a.id]||{state:'pending',left:a.amount||0};
+      // Only a fully unrecovered advance can be deleted (e.g. entered by mistake);
+      // deleting a recovered one would wrongly reduce what the staff still owes.
+      var statusHtml=st.state==='settled'?
         '<span class="status-approved">Settled</span>':
+        st.state==='partial'?
+        '<span style="color:var(--accent);font-size:12px;font-weight:600;">₹'+st.left.toLocaleString('en-IN')+' left</span>':
         '<div style="display:flex;align-items:center;gap:6px;"><span style="color:var(--accent);font-size:12px;font-weight:600;">Pending</span>'+
-        '<button class="btn btn-ghost btn-xs" style="color:var(--danger);border-color:var(--danger);padding:3px 8px;font-size:11px;" onclick="deleteAdvance(\''+a.id+'\',\''+a.staffId+'\','+a.amount+')">🗑️</button></div>';
+        '<button class="btn btn-ghost btn-xs" style="color:var(--red);border-color:var(--red);padding:3px 8px;font-size:11px;" onclick="deleteAdvance(\''+a.id+'\',\''+a.staffId+'\','+a.amount+')">🗑️</button></div>';
       logHtml+='<div class="row"><div class="row-main">'+
-        '<div class="row-title">'+a.staffName+' · ₹'+a.amount.toLocaleString('en-IN')+'</div>'+
-        '<div class="row-sub">'+a.date+(a.note?' · '+a.note:'')+'</div></div>'+statusHtml+'</div>';
+        '<div class="row-title">'+ksEsc(a.staffName)+' · ₹'+(a.amount||0).toLocaleString('en-IN')+'</div>'+
+        '<div class="row-sub">'+ksEsc(a.date)+(a.note?' · '+ksEsc(a.note):'')+'</div></div>'+statusHtml+'</div>';
     });
     el.innerHTML=summaryHtml+logHtml;
   }catch(e){el.innerHTML='<p style="color:var(--muted);font-size:13px">Error loading</p>';}
 }
 
 // Advance recovery now handled automatically via ledger on markAsPaid
+var advStatus={};
 
 window.deleteAdvance=async function(id,staffId,amount){
+  var st=advStatus[id];
+  if(st&&st.state!=='pending')return toast('This advance was already recovered in payroll — it cannot be deleted',true);
   if(!confirm('Delete this advance of ₹'+amount+'? This will also reduce the ledger balance.'))return;
   try{
-    await fbDel(p.advances()+'/'+id);
-    // Correct ledger balance
     const ledger=await fbGet(p.advLedger(staffId)).catch(()=>null);
-    if(ledger){
-      const newBal=Math.max(0,(ledger.balance||0)-amount);
-      await fbSet(p.advLedger(staffId),{balance:newBal,lastUpdated:new Date().toISOString()});
-    }
+    const before=ledger&&ledger.balance>0?ledger.balance:0;
+    const newBal=Math.max(0,before-amount);
+    const staffName=(staffArr.find(function(x){return x.id===staffId;})||{}).name||'';
+    const batch=writeBatch(db);
+    batch.delete(doc(db,p.advances()+'/'+id));
+    if(ledger)batch.set(doc(db,p.advLedger(staffId)),{balance:newBal,lastUpdated:new Date().toISOString()},{merge:true});
+    batch.set(doc(collection(db,p.advLedgerLog())),{type:'deleted',staffId:staffId,staffName:staffName,amount:amount,balanceBefore:before,balanceAfter:newBal,date:new Date().toLocaleDateString('en-IN'),ts:Date.now()});
+    await batch.commit();
     renderAdvList();
     populatePayrollDropdowns();
     toast('✓ Advance deleted · Ledger updated');
@@ -3919,7 +3970,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.20.5</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.20.6</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4843,7 +4894,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.20.5</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.20.6</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -4851,11 +4902,27 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.20.6 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.20.6</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Mark as Paid again (or after changing amounts) now updates the payment — the advance is no longer recovered twice</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Paid months show advance figures as they were at payment time</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Late deduction now shown on the payroll screen and salary slip</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Incentive and advance amounts no longer carry over when switching staff or month</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Half-day leave: hours worked that day are paid, plus ½ day if the leave is paid</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Advances show Settled / ₹ left / Pending; recovered advances can no longer be deleted</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Inactive staff can be selected in Payroll for their final settlement</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.20.5 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.20.5</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.20.5</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Fix tab flags days that need a check: very short days and a first punch-in 3+ hours after start time (missed punch-in?)</span></div>
