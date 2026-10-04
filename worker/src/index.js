@@ -5,8 +5,9 @@
 import { createFirestore, newId, FirestoreError } from './firestore.js';
 import {
   todayStr, localParts, localHHMM, isValidDate, isValidHHMM, isLateAt, sessionTimes, rollup,
-  detectAnomalies, publicRecord,
+  detectAnomalies, publicRecord, planDoubleTapFix, reviewFlags, minsToHM,
 } from './attendance.js';
+import { slipHtml, slipsDocument } from './slip.js';
 import { computePayroll, defaultSalaryCfg } from './payroll.js';
 
 export default {
@@ -46,8 +47,12 @@ const routes = [
   ['GET', `^/biz/${ID}/attendance/(\\d{4}-\\d{2}-\\d{2})/${ID}$`, getRecord],
   ['PATCH', `^/biz/${ID}/attendance/(\\d{4}-\\d{2}-\\d{2})/${ID}$`, editSession],
   ['DELETE', `^/biz/${ID}/attendance/(\\d{4}-\\d{2}-\\d{2})/${ID}/session/(\\d+)$`, deleteSession],
+  ['POST', `^/biz/${ID}/attendance/(\\d{4}-\\d{2})/autofix$`, autofix],
   ['GET', `^/biz/${ID}/payroll/(\\d{4}-\\d{2})$`, payrollAll],
+  ['GET', `^/biz/${ID}/payroll/(\\d{4}-\\d{2})/slips$`, slipsAll],
   ['GET', `^/biz/${ID}/payroll/(\\d{4}-\\d{2})/${ID}$`, payroll],
+  ['GET', `^/biz/${ID}/payroll/(\\d{4}-\\d{2})/${ID}/slip$`, slipOne],
+  ['POST', `^/biz/${ID}/monthend/(\\d{4}-\\d{2})$`, monthEnd],
   ['POST', `^/biz/${ID}/advance$`, giveAdvance],
 ].map(([m, re, fn]) => [m, new RegExp(re), fn]);
 
@@ -108,6 +113,9 @@ const P = {
   advLedger: (b, s) => `businesses/${b}/advance_ledger/${s}`,
   advLedgerLog: (b) => `businesses/${b}/advance_ledger_log`,
   salary: (b, s) => `businesses/${b}/salary_config/${s}`,
+  salaries: (b) => `businesses/${b}/salary_config`,
+  ledgers: (b) => `businesses/${b}/advance_ledger`,
+  payments: (b) => `businesses/${b}/payments`,
 };
 
 async function requireBusiness(ctx, bizId) {
@@ -176,13 +184,11 @@ async function addStaff(ctx, bizId) {
 }
 
 async function monthAttendance(ctx, bizId, month) {
-  const { from, to } = monthRange(month);
-  const filters = [['date', '>=', from], ['date', '<=', to]];
+  const M = await loadMonth(ctx, bizId, month);
   const staffFilter = ctx.url.searchParams.get('staffId');
-  const today = todayStr(ctx.tz);
-  let recs = await ctx.db.list(P.recs(bizId), filters);
+  let recs = M.recs;
   if (staffFilter) recs = recs.filter((r) => r.data.staffId === staffFilter);
-  let records = recs.map((r) => ({ ...publicRecord(r.id, r.data), flags: detectAnomalies(r.data, today) }))
+  let records = recs.map((r) => ({ ...publicRecord(r.id, r.data), flags: allFlags(M, r.data) }))
     .sort((a, b) => (a.date + a.staffName).localeCompare(b.date + b.staffName));
   const byCode = {};
   for (const r of records) for (const f of r.flags) byCode[f.code] = (byCode[f.code] || 0) + 1;
@@ -298,37 +304,30 @@ async function deleteSession(ctx, bizId, date, staffId, idxStr) {
   return json({ record: publicRecord(existing.id, merged), flags: detectAnomalies(merged, todayStr(ctx.tz)) });
 }
 
-async function payroll(ctx, bizId, month, staffId) {
+// ── Month data shared by attendance, payroll, slips, auto-fix and month-end ──
+async function loadMonth(ctx, bizId, month) {
   const { y, m, from, to } = monthRange(month);
-  const q = ctx.url.searchParams;
-  const intParam = (name) => {
-    const v = q.get(name);
-    if (v == null || v === '') return null;
-    if (!/^\d+$/.test(v)) throw bad(name + ' must be a non-negative integer');
-    return Number(v);
-  };
-  const staff = await requireStaff(ctx, bizId, staffId);
-  const [cfgDoc, recs, marks, ledger, advances, sett] = await Promise.all([
-    ctx.db.get(P.salary(bizId, staffId)),
-    ctx.db.list(P.recs(bizId), [['staffId', '==', staffId], ['date', '>=', from], ['date', '<=', to]]),
+  const [staffDocs, cfgs, recs, marks, ledgers, advances, sett, pays] = await Promise.all([
+    ctx.db.list(P.staff(bizId)),
+    ctx.db.list(P.salaries(bizId)),
+    ctx.db.list(P.recs(bizId), [['date', '>=', from], ['date', '<=', to]]),
     ctx.db.list(P.days(bizId), [['date', '>=', from], ['date', '<=', to]]),
-    ctx.db.get(P.advLedger(bizId, staffId)),
-    ctx.db.list(P.advances(bizId), [['staffId', '==', staffId]]),
+    ctx.db.list(P.ledgers(bizId)),
+    ctx.db.list(P.advances(bizId)),
     ctx.db.get(P.settings(bizId)),
+    ctx.db.list(P.payments(bizId), [['month', '==', month]]),
   ]);
-  const result = computePayroll({
-    cfg: cfgDoc ? cfgDoc.data : defaultSalaryCfg(),
-    staff, sid: staffId, year: y, month: m,
-    today: localParts(new Date(), ctx.tz),
-    recs: recMapOf(recs), marks: markMapOf(marks),
-    ledgerBalance: ledger ? ledger.data.balance || 0 : 0,
-    advances: advances.map((a) => a.data),
-    weeklyOffPaid: !(sett && sett.data.weeklyOffPaid === false),
-    holidayPaid: !(sett && sett.data.holidayPaid === false),
-    incentive: intParam('incentive') || 0,
-    advanceRecover: intParam('advanceRecover'),
-  });
-  return json({ staffId, staffName: staff.name, salaryConfigured: !!cfgDoc, ...result });
+  const byId = (docs) => Object.fromEntries(docs.map((d) => [d.id, d.data]));
+  const settings = sett ? sett.data : {};
+  return {
+    bizId, month, y, m, settings,
+    staff: staffDocs, staffMap: byId(staffDocs), cfgMap: byId(cfgs), ledgerMap: byId(ledgers),
+    recs, recMap: recMapOf(recs), marks: markMapOf(marks),
+    advances, payMap: Object.fromEntries(pays.map((d) => [d.data.staffId, d.data])),
+    today: localParts(new Date(), ctx.tz), todayStr: todayStr(ctx.tz), tz: ctx.tz,
+    weeklyOffPaid: settings.weeklyOffPaid !== false,
+    holidayPaid: settings.holidayPaid !== false,
+  };
 }
 
 function recMapOf(recs) {
@@ -342,42 +341,179 @@ function markMapOf(marks) {
   return m;
 }
 
-/** Payroll for every active staff member (and anyone with attendance that month), with app defaults. */
-async function payrollAll(ctx, bizId, month) {
-  const { y, m, from, to } = monthRange(month);
-  const [staffDocs, cfgs, recs, marks, ledgers, advances, sett] = await Promise.all([
-    ctx.db.list(P.staff(bizId)),
-    ctx.db.list(`businesses/${bizId}/salary_config`),
-    ctx.db.list(P.recs(bizId), [['date', '>=', from], ['date', '<=', to]]),
-    ctx.db.list(P.days(bizId), [['date', '>=', from], ['date', '<=', to]]),
-    ctx.db.list(`businesses/${bizId}/advance_ledger`),
-    ctx.db.list(P.advances(bizId)),
-    ctx.db.get(P.settings(bizId)),
-  ]);
-  const weeklyOffPaid = !(sett && sett.data.weeklyOffPaid === false);
-  const holidayPaid = !(sett && sett.data.holidayPaid === false);
-  const byId = (docs) => Object.fromEntries(docs.map((d) => [d.id, d.data]));
-  const cfgMap = byId(cfgs), ledgerMap = byId(ledgers);
-  const withRecs = new Set(recs.map((r) => r.data.staffId));
-  const recMap = recMapOf(recs), markMap = markMapOf(marks);
-  const today = localParts(new Date(), ctx.tz);
-  const staff = staffDocs
+// Errors + "needs a check" flags for one record, with the staff's own hours and days off
+function allFlags(M, rec) {
+  const cfg = M.cfgMap[rec.staffId] || defaultSalaryCfg();
+  const std = cfg.standardHours || autoStdHours(cfg);
+  const dow = new Date(rec.date + 'T00:00:00Z').getUTCDay();
+  const mark = M.marks[rec.date] || M.marks[rec.date + '_' + rec.staffId];
+  const off = (cfg.weeklyOff >= 0 && dow == cfg.weeklyOff) || (mark && (mark.type === 'holiday' || mark.type === 'leave')); // eslint-disable-line eqeqeq
+  return detectAnomalies(rec, M.todayStr).concat(reviewFlags(rec, M.todayStr, {
+    stdMins: Math.round(std * 60), startTime: cfg.startTime || M.settings.punchInTime || '10:00', off,
+  }, M.tz));
+}
+function autoStdHours(cfg) {
+  const s = (cfg.startTime || '10:00').split(':').map(Number), e = (cfg.endTime || '21:00').split(':').map(Number);
+  return Math.max(1, Math.round(((e[0] * 60 + e[1]) - (s[0] * 60 + s[1])) / 60 * 2) / 2);
+}
+
+// Payroll for one staff member. A paid month uses what was saved at payment
+// (incentive, advance recovered; outstanding = current balance + that recovery).
+function staffPayroll(M, sid, opts = {}) {
+  const staff = M.staffMap[sid];
+  const cfgDoc = M.cfgMap[sid];
+  const paid = M.payMap[sid] || null;
+  const curBal = M.ledgerMap[sid] ? M.ledgerMap[sid].balance || 0 : 0;
+  const result = computePayroll({
+    cfg: cfgDoc || defaultSalaryCfg(),
+    staff, sid, year: M.y, month: M.m, today: M.today,
+    recs: M.recMap, marks: M.marks,
+    ledgerBalance: curBal + (paid ? paid.advRecovered || 0 : 0),
+    advances: M.advances.filter((a) => a.data.staffId === sid).map((a) => a.data),
+    weeklyOffPaid: M.weeklyOffPaid, holidayPaid: M.holidayPaid,
+    incentive: opts.incentive != null ? opts.incentive : (paid ? paid.incentive || 0 : 0),
+    advanceRecover: opts.advanceRecover != null ? opts.advanceRecover : (paid ? paid.advRecovered || 0 : null),
+  });
+  return {
+    staffId: sid, staffName: staff.name, active: !!staff.active, salaryConfigured: !!cfgDoc,
+    payment: paid ? { paid: true, date: paid.date, mode: paid.mode, note: paid.note || '', net: paid.net } : { paid: false },
+    ...result,
+  };
+}
+
+// Staff included in a month's payroll: active, or anyone with attendance that month
+function payrollStaffIds(M) {
+  const withRecs = new Set(M.recs.map((r) => r.data.staffId));
+  return M.staff
     .filter((s) => s.data.active || withRecs.has(s.id))
     .sort((a, b) => String(a.data.name).localeCompare(String(b.data.name)))
-    .map((s) => ({
-      staffId: s.id, staffName: s.data.name, active: !!s.data.active, salaryConfigured: !!cfgMap[s.id],
-      ...computePayroll({
-        cfg: cfgMap[s.id] || defaultSalaryCfg(),
-        staff: s.data, sid: s.id, year: y, month: m, today,
-        recs: recMap, marks: markMap,
-        ledgerBalance: ledgerMap[s.id] ? ledgerMap[s.id].balance || 0 : 0,
-        advances: advances.filter((a) => a.data.staffId === s.id).map((a) => a.data),
-        incentive: 0, advanceRecover: null, weeklyOffPaid, holidayPaid,
-      }),
-    }));
-  const total = staff.reduce((t, s) => ({ gross: t.gross + s.pay.gross, net: t.net + s.pay.net,
+    .map((s) => s.id);
+}
+function totals(list) {
+  return list.reduce((t, s) => ({ gross: t.gross + s.pay.gross, net: t.net + s.pay.net,
     advanceRecovered: t.advanceRecovered + s.pay.advanceRecovered }), { gross: 0, net: 0, advanceRecovered: 0 });
-  return json({ month, total, staff });
+}
+
+async function payroll(ctx, bizId, month, staffId) {
+  const q = ctx.url.searchParams;
+  const intParam = (name) => {
+    const v = q.get(name);
+    if (v == null || v === '') return null;
+    if (!/^\d+$/.test(v)) throw bad(name + ' must be a non-negative integer');
+    return Number(v);
+  };
+  const incentive = intParam('incentive'), advanceRecover = intParam('advanceRecover');
+  const M = await loadMonth(ctx, bizId, month);
+  if (!M.staffMap[staffId]) throw notFound('Staff not found');
+  return json(staffPayroll(M, staffId, { incentive, advanceRecover }));
+}
+
+/** Payroll for every active staff member (and anyone with attendance that month). */
+async function payrollAll(ctx, bizId, month) {
+  const M = await loadMonth(ctx, bizId, month);
+  const staff = payrollStaffIds(M).map((sid) => staffPayroll(M, sid));
+  return json({ month, total: totals(staff), staff });
+}
+
+// ── Salary slips (HTML, printable / attachable) ──
+function html(body) {
+  return new Response(body, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+}
+async function slipOne(ctx, bizId, month, staffId) {
+  const M = await loadMonth(ctx, bizId, month);
+  if (!M.staffMap[staffId]) throw notFound('Staff not found');
+  return html(slipsDocument(ctx.biz, month, [staffPayroll(M, staffId)], M.staffMap));
+}
+async function slipsAll(ctx, bizId, month) {
+  const M = await loadMonth(ctx, bizId, month);
+  const list = payrollStaffIds(M).map((sid) => staffPayroll(M, sid));
+  return html(slipsDocument(ctx.biz, month, list, M.staffMap));
+}
+
+// ── Auto-fix double taps for a month ──
+// Body: {dryRun?: boolean, staffId?: string}. Days up to today only.
+async function autofix(ctx, bizId, month) {
+  const dryRun = !!(ctx.body && ctx.body.dryRun);
+  const only = ctx.body && ctx.body.staffId;
+  const M = await loadMonth(ctx, bizId, month);
+  return json(await runAutofix(ctx, M, { dryRun, only }));
+}
+
+async function runAutofix(ctx, M, { dryRun, only }) {
+  const fixed = [], failed = [];
+  for (const r of M.recs) {
+    const rec = r.data;
+    if (only && rec.staffId !== only) continue;
+    if (!rec.date || rec.date > M.todayStr) continue;
+    const plan = planDoubleTapFix(rec);
+    if (!plan) continue;
+    const sessions = plan.keep.map((i) => rec.sessions[i]);
+    const removed = plan.removed.map((i) => rec.sessions[i]);
+    const entry = {
+      staffId: rec.staffId, staffName: rec.staffName, date: rec.date,
+      removed: removed.map((x) => ({ inTime: x.inTime || '', outTime: x.outTime || '' })),
+      kept: sessions.map((x) => ({ inTime: x.inTime || '', outTime: x.outTime || '', workedMins: x.workedMins || 0 })),
+    };
+    if (!dryRun) {
+      const update = {
+        ...rollup(sessions),
+        manualEdit: true,
+        removedDuplicates: (Array.isArray(rec.removedDuplicates) ? rec.removedDuplicates : []).concat(removed.map((x) => ({
+          inTime: x.inTime || '', inISO: x.inISO || '', outTime: x.outTime || '', outISO: x.outISO || '',
+          removedAt: new Date().toISOString(),
+        }))),
+        lastApiEdit: { at: new Date().toISOString(), action: 'autofix' },
+        _updatedAt: new Date(),
+      };
+      try {
+        await ctx.db.commit([{ set: `businesses/${M.bizId}/attendance/${r.id}`, data: update, merge: true, ifUpdateTime: r.updateTime }]);
+        Object.assign(rec, update);
+      } catch (e) {
+        failed.push({ ...entry, error: e.message });
+        continue;
+      }
+    }
+    fixed.push(entry);
+  }
+  // What still needs a person, after the fixes
+  const needsReview = M.recs
+    .filter((r) => !only || r.data.staffId === only)
+    .map((r) => ({ staffId: r.data.staffId, staffName: r.data.staffName, date: r.data.date, flags: allFlags(M, r.data) }))
+    .filter((x) => x.flags.length)
+    .sort((a, b) => (a.date + a.staffName).localeCompare(b.date + b.staffName));
+  return {
+    month: M.month, dryRun: !!dryRun,
+    summary: { daysFixed: fixed.length, sessionsRemoved: fixed.reduce((t, f) => t + f.removed.length, 0),
+      failed: failed.length, needsReview: needsReview.length },
+    fixed, failed, needsReview,
+  };
+}
+
+// ── Month end in one call: auto-fix → what needs a person → payroll for everyone ──
+// Body: {apply?: boolean = true}. With apply:false nothing is changed (preview).
+async function monthEnd(ctx, bizId, month) {
+  const apply = !(ctx.body && ctx.body.apply === false);
+  const M = await loadMonth(ctx, bizId, month);
+  const fix = await runAutofix(ctx, M, { dryRun: !apply });
+  const staff = payrollStaffIds(M).map((sid) => staffPayroll(M, sid));
+  const base = new URL(ctx.request.url).origin;
+  return json({
+    business: ctx.biz.name || bizId, month, applied: apply,
+    autofix: { summary: fix.summary, fixed: fix.fixed, failed: fix.failed },
+    needsReview: fix.needsReview,
+    payroll: {
+      total: totals(staff),
+      notConfigured: staff.filter((s) => !s.salaryConfigured).map((s) => s.staffName),
+      staff: staff.map((s) => ({
+        staffId: s.staffId, staffName: s.staffName, paid: s.payment.paid,
+        present: s.attendance.present, absent: s.attendance.absent, late: s.attendance.late,
+        gross: s.pay.gross, advanceRecovered: s.pay.advanceRecovered, net: s.pay.net,
+        advanceCarryForward: s.advances.carryForwardAfter,
+        slipUrl: `${base}/biz/${bizId}/payroll/${month}/${s.staffId}/slip`,
+      })),
+    },
+    allSlipsUrl: `${base}/biz/${bizId}/payroll/${month}/slips`,
+  });
 }
 
 async function giveAdvance(ctx, bizId) {

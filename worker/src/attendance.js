@@ -161,3 +161,57 @@ export function publicRecord(id, rec) {
   out.sessions = sessions;
   return out;
 }
+
+// ── Auto-fix double taps (same rules as the app's Fix tab) ──
+// Sessions starting within 2 min of each other form a cluster. Keep one per cluster:
+//  • exactly one has a punch-out → keep it
+//  • none has a punch-out and it's the day's last cluster → keep the first (owner adds punch-out)
+//  • otherwise (two different punch-outs, or open in the middle) → leave for a person
+export function planDoubleTapFix(rec) {
+  const ss = Array.isArray(rec.sessions) ? rec.sessions : [];
+  if (ss.length < 2) return null;
+  const t = (s) => (s.inISO ? new Date(s.inISO).getTime() : NaN);
+  const clusters = [];
+  let cur = null;
+  ss.forEach((s, i) => {
+    if (cur && !isNaN(t(s)) && !isNaN(t(ss[cur[0]])) && Math.abs(t(s) - t(ss[cur[0]])) < DUP_WINDOW_MS) cur.push(i);
+    else { cur = [i]; clusters.push(cur); }
+  });
+  const keep = [], removed = [];
+  clusters.forEach((c, ci) => {
+    if (c.length === 1) { keep.push(c[0]); return; }
+    const closed = c.filter((i) => !!ss[i].outTime);
+    let pick = null;
+    if (closed.length === 1) pick = closed[0];
+    else if (closed.length === 0 && ci === clusters.length - 1) pick = c[0];
+    if (pick == null) { keep.push(...c); return; }
+    keep.push(pick);
+    c.forEach((i) => { if (i !== pick) removed.push(i); });
+  });
+  return removed.length ? { keep, removed } : null;
+}
+
+// ── "Needs a check" flags (same as the app's Fix tab) ──
+// ctx: {stdMins, startTime, off}  (off = leave / holiday / weekly off → no flags)
+export function reviewFlags(rec, today, ctx, tz) {
+  if (!ctx || ctx.off || rec.reviewOk) return [];
+  const flags = [];
+  const ss = rec.sessions && rec.sessions.length ? rec.sessions : null;
+  const open = ss ? ss.some((s) => !s.outTime) : !rec.outTime;
+  const total = ss ? ss.reduce((a, s) => a + (s.workedMins || 0), 0) : (rec.workedMins || 0);
+  if (!open && rec.date < today && ctx.stdMins > 0 && total < ctx.stdMins / 2) {
+    flags.push({ code: 'short_day', severity: 'review',
+      message: `Only ${minsToHM(total)} worked (standard ${minsToHM(ctx.stdMins)}) — missed punch-in or punch-out?` });
+  }
+  const firstISO = ss ? ss[0].inISO : rec.inISO;
+  if (firstISO && ctx.startTime) {
+    const [h, m] = localHHMM(firstISO, tz).split(':').map(Number);
+    const [sh, sm] = ctx.startTime.split(':').map(Number);
+    const lateBy = (h * 60 + m) - (sh * 60 + sm);
+    if (lateBy > 180) {
+      flags.push({ code: 'late_start', severity: 'review',
+        message: `First punch-in at ${ss ? ss[0].inTime : rec.inTime} — ${minsToHM(lateBy)} after start time. Forgot to punch in?` });
+    }
+  }
+  return flags;
+}
