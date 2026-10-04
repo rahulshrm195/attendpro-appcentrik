@@ -1854,13 +1854,14 @@ async function populatePayrollDropdowns(){
   // Build advance outstanding map — fetch ALL in parallel
   const advMap={};
   try{
-    var ledgerPromises=active.map(function(s){return fbGet(p.advLedger(s.id)).catch(function(){return null;});});
+    var ledgerPromises=staffArr.map(function(s){return fbGet(p.advLedger(s.id)).catch(function(){return null;});});
     var ledgers=await Promise.all(ledgerPromises);
     ledgers.forEach(function(ledger,i){
-      if(ledger&&ledger.balance>0) advMap[active[i].id]=ledger.balance;
+      if(ledger&&ledger.balance>0) advMap[staffArr[i].id]=ledger.balance;
     });
   }catch(e){}
-  const inactive=staffArr.filter(s=>!s.active);
+  // Inactive staff are hidden — unless they still owe an advance (final settlement)
+  const inactive=staffArr.filter(s=>!s.active&&advMap[s.id]);
   ['pay-staff-sel','adv-staff-sel'].forEach(function(id){
     const el=document.getElementById(id);if(!el)return;
     const cur=el.value;
@@ -1869,9 +1870,8 @@ async function populatePayrollDropdowns(){
       const badge=advMap[s.id]?' ⚠️ ₹'+advMap[s.id].toLocaleString('en-IN')+' adv':'';
       html+='<option value="'+ksEsc(s.id)+'">'+ksEsc(s.name)+badge+'</option>';
     });
-    // Inactive staff only in Payroll, for their final settlement
     if(id==='pay-staff-sel')inactive.forEach(function(s){
-      html+='<option value="'+ksEsc(s.id)+'">'+ksEsc(s.name)+' (inactive)</option>';
+      html+='<option value="'+ksEsc(s.id)+'">'+ksEsc(s.name)+' (inactive) ⚠️ ₹'+advMap[s.id].toLocaleString('en-IN')+' adv</option>';
     });
     el.innerHTML=html;
     if(cur)el.value=cur;
@@ -2340,10 +2340,16 @@ async function renderAdvList(){
       });
     });
     // Build ledger summary per staff
+    var focus=v('adv-staff-sel');
+    var focusStaff=focus?staffArr.find(function(x){return x.id===focus;}):null;
     var summaryHtml='<div style="margin-bottom:14px;">';
+    if(focusStaff)summaryHtml+='<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--muted);margin-bottom:6px;">'+
+      '<span>Showing <b style="color:var(--text);">'+ksEsc(focusStaff.name)+'</b> only</span>'+
+      '<button class="btn btn-ghost btn-xs" style="font-size:11px;padding:4px 10px;" onclick="advShowAll()">Show all</button></div>';
     var anyOutstanding=false;
-    for(var i=0;i<active.length;i++){
-      var s=active[i];
+    var summaryStaff=focusStaff?[focusStaff]:active;
+    for(var i=0;i<summaryStaff.length;i++){
+      var s=summaryStaff[i];
       var bal=balMap[s.id]||0;
       if(bal>0)anyOutstanding=true;
       var op=allAdvs.find(function(a){return a.opening&&a.staffId===s.id;});
@@ -2352,14 +2358,15 @@ async function renderAdvList(){
         '<span style="color:'+(bal>0?'var(--accent)':'var(--green)')+';font-weight:700;font-size:14px;margin-right:8px;">₹'+bal.toLocaleString('en-IN')+'</span>'+
         '<button class="btn btn-ghost btn-xs" style="font-size:11px;padding:4px 8px;white-space:nowrap;" onclick="setOpeningBalance(\''+ksEsc(s.id)+'\')">✏️ Opening</button></div>';
     }
-    if(!anyOutstanding) summaryHtml+='<div style="color:var(--green);font-size:13px;font-weight:600;margin-top:6px;">✓ No outstanding advances</div>';
+    if(!anyOutstanding) summaryHtml+='<div style="color:var(--green);font-size:13px;font-weight:600;margin-top:6px;">✓ No outstanding advance'+(focusStaff?'':'s')+'</div>';
     summaryHtml+='</div><div class="divider"></div>';
 
     // Full transaction log
-    const advs=await fbList(p.advances(),orderBy('_createdAt','desc'));
+    var advs=await fbList(p.advances(),orderBy('_createdAt','desc'));
+    if(focus)advs=advs.filter(function(a){return a.staffId===focus;});
     if(!advs.length){el.innerHTML=summaryHtml+'<p style="color:var(--muted);font-size:13px;margin-top:10px;">No advance transactions yet</p>';return;}
-    var logHtml='<div style="font-size:12px;font-weight:700;color:var(--muted);margin:12px 0 8px;">All Transactions</div>';
-    advs.slice(0,30).forEach(function(a){
+    var logHtml='<div style="font-size:12px;font-weight:700;color:var(--muted);margin:12px 0 8px;">'+(focusStaff?ksEsc(focusStaff.name)+'’s Transactions':'All Transactions')+'</div>';
+    (focusStaff?advs:advs.slice(0,30)).forEach(function(a){
       var st=advStatus[a.id]||{state:'pending',left:a.amount||0};
       // Only a fully unrecovered advance can be deleted (e.g. entered by mistake);
       // deleting a recovered one would wrongly reduce what the staff still owes.
@@ -2383,6 +2390,18 @@ async function renderAdvList(){
 
 // Advance recovery now handled automatically via ledger on markAsPaid
 var advStatus={};
+
+// Payroll staff choice also focuses the advance tracker on that person
+window.syncAdvStaff=function(sid){
+  var el=document.getElementById('adv-staff-sel');if(!el)return;
+  el.value=[...el.options].some(function(o){return o.value===sid;})?sid:'';
+  renderAdvList();
+};
+window.advShowAll=function(){
+  var el=document.getElementById('adv-staff-sel');if(el)el.value='';
+  renderAdvList();
+};
+window.renderAdvList=function(){return renderAdvList();};
 
 // Opening balance: "as of now, this person owes ₹X". Replaces the ledger balance;
 // advances recorded before it are treated as included in it.
@@ -4072,7 +4091,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.21.2</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.21.3</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4373,7 +4392,7 @@ textarea.form-input{resize:none;}
         <div class="card-title">Payroll Calculator</div>
         <div class="two-col">
           <div class="form-group" style="margin-bottom:0;"><label class="form-label">Staff</label>
-            <select class="form-input form-select" id="pay-staff-sel" onchange="renderPayroll()"><option value="">Select…</option></select></div>
+            <select class="form-input form-select" id="pay-staff-sel" onchange="syncAdvStaff(this.value);renderPayroll()"><option value="">Select…</option></select></div>
           <div class="form-group" style="margin-bottom:0;"><label class="form-label">Month</label>
             <div style="display:flex;align-items:center;gap:6px;">
               <button class="btn btn-ghost btn-xs" onclick="changePayMonth(-1)" style="padding:8px 12px;font-size:18px;line-height:1;">‹</button>
@@ -4444,7 +4463,7 @@ textarea.form-input{resize:none;}
       <!-- Advance tracker -->
       <div class="card">
         <div class="card-title">Advance Tracker</div>
-        <div class="form-group"><label class="form-label">Staff</label><select class="form-input form-select" id="adv-staff-sel"></select></div>
+        <div class="form-group"><label class="form-label">Staff</label><select class="form-input form-select" id="adv-staff-sel" onchange="renderAdvList()"></select></div>
         <div class="two-col">
           <div class="form-group"><label class="form-label">Amount (₹)</label><input type="number" class="form-input" id="adv-amount" placeholder="0" min="0"></div>
           <div class="form-group"><label class="form-label">Date</label><input type="date" class="form-input" id="adv-date"></div>
@@ -5010,7 +5029,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.21.2</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.21.3</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -5018,11 +5037,22 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.21.3 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.21.3</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll staff list hides inactive staff (shown only if they still owe an advance)</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Advance tracker shows only the selected staff member's balance and transactions; "Show all" to see everyone</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.21.2 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.21.2</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.21.2</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Cleaner attendance rows on Today and Reports: photo, name and buttons on top; sessions and durations full-width below</span></div>
