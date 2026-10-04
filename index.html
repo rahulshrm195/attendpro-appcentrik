@@ -920,7 +920,7 @@ window.showOwnerTab=function(tab,btn){
   if(tab==='reports')renderReport();
   if(tab==='payroll'){populatePayrollDropdowns();renderPayHistory();renderAdvList();}
   if(tab==='staff')renderStaffList();
-  if(tab==='settings')loadOwnerSettings();
+  if(tab==='settings'){loadOwnerSettings();renderHolidayList();}
   if(tab==='qr')renderQRCode();
   if(tab==='fix')renderFixList();
 };
@@ -2166,7 +2166,7 @@ window.renderPayroll=async function(){
     if(woPayRow){
       if(woPaid&&weeklyOffPaidDays>0){
         woPayRow.style.display='flex';
-        R('pb-wopay-lbl','Weekly Off Pay ('+weeklyOffPaidDays+' day'+(weeklyOffPaidDays>1?'s':'')+' × ₹'+perDayR+')');
+        R('pb-wopay-lbl','Weekly Off Pay ('+weeklyOffPaidDays+' day'+(weeklyOffPaidDays>1?'s':'')+' × ₹'+perDayR.toLocaleString('en-IN')+')');
         R('pb-wopay','+₹'+woPay.toLocaleString('en-IN'));
       } else woPayRow.style.display='none';
     }
@@ -2181,7 +2181,7 @@ window.renderPayroll=async function(){
     if(holRow){
       if(holidayPay>0){
         holRow.style.display='flex';
-        R('pb-holiday-lbl','Holiday Pay ('+holidayDays+' day'+(holidayDays>1?'s':'')+' × ₹'+perDayR+')');
+        R('pb-holiday-lbl','Holiday Pay ('+holidayDays+' day'+(holidayDays>1?'s':'')+' × ₹'+perDayR.toLocaleString('en-IN')+')');
         R('pb-holiday','+₹'+holidayPay.toLocaleString('en-IN'));
       } else holRow.style.display='none';
     }
@@ -2190,7 +2190,7 @@ window.renderPayroll=async function(){
     if(plRow){
       if(paidLeaveDays>0){
         plRow.style.display='flex';
-        R('pb-paidleave-lbl','Paid Leave ('+paidLeaveDays+' day'+(paidLeaveDays>1?'s':'')+' × ₹'+perDayR+')');
+        R('pb-paidleave-lbl','Paid Leave ('+paidLeaveDays+' day'+(paidLeaveDays>1?'s':'')+' × ₹'+perDayR.toLocaleString('en-IN')+')');
         R('pb-paidleave','+₹'+paidLeaveAmt.toLocaleString('en-IN'));
       } else plRow.style.display='none';
     }
@@ -2862,6 +2862,84 @@ window.markDay=async function(){
     toast('✓ '+date+' marked');document.getElementById('mark-note').value='';
   }
   catch(e){toast('Error: '+e.message,true);}
+};
+
+// ─────────────────────────────────────────────
+//  SHOP HOLIDAYS (yearly list) — stored as days/{date} {type:'holiday'}
+// ─────────────────────────────────────────────
+var holYear=new Date().getFullYear();
+window.changeHolYear=function(d){holYear+=d;renderHolidayList();};
+function clearMarksCache(){window._marksCache={};}
+async function renderHolidayList(){
+  var el=document.getElementById('hol-list');if(!el)return;
+  document.getElementById('hol-year-lbl').textContent=holYear;
+  el.innerHTML='<div style="font-size:12px;color:var(--muted);">Loading…</div>';
+  try{
+    var all=await fbList(p.days(),where('type','==','holiday'));
+    var list=all.filter(function(h){return !h.staffId&&h.date&&h.date.indexOf(holYear+'-')===0;})
+      .sort(function(a,b){return a.date.localeCompare(b.date);});
+    if(!list.length){el.innerHTML='<div style="font-size:13px;color:var(--muted);">No holidays added for '+holYear+' yet.</div>';return;}
+    el.innerHTML='<div style="font-size:12px;color:var(--muted);margin-bottom:4px;">'+list.length+' holiday'+(list.length!==1?'s':'')+' in '+holYear+'</div>'+
+      list.map(function(h){
+        var d=new Date(h.date+'T00:00:00');
+        return '<div class="row" style="padding:8px 0;"><div class="row-main"><div class="row-title" style="font-size:14px;">'+ksEsc(h.note||'Holiday')+'</div>'+
+          '<div class="row-sub">'+d.toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short',year:'numeric'})+'</div></div>'+
+          '<button class="btn btn-ghost btn-xs" style="color:var(--red);border-color:var(--red);padding:3px 8px;font-size:11px;" onclick="deleteHoliday(\''+ksEsc(h.date)+'\')">🗑️</button></div>';
+      }).join('');
+  }catch(e){el.innerHTML='<div style="font-size:12px;color:var(--red);">Could not load holidays</div>';}
+}
+window.renderHolidayList=renderHolidayList;
+window.addHoliday=async function(){
+  var date=v('hol-date'),name=v('hol-name');
+  if(!date)return toast('Select a date',true);
+  try{
+    await fbSet(p.day(date,null),{type:'holiday',date:date,note:name||'Holiday'});
+    clearMarksCache();
+    document.getElementById('hol-name').value='';
+    holYear=parseInt(date.slice(0,4));
+    toast('✓ Holiday added: '+(name||date));renderHolidayList();
+  }catch(e){toast('Error: '+e.message,true);}
+};
+// Accepts 20-10-2026, 20/10/2026, 20.10.2026, 2026-10-20 or 20 Oct 2026, followed by a name
+var HOL_MONTHS={jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,sept:9,oct:10,nov:11,dec:12};
+function parseHolidayLine(line){
+  var t=line.trim();if(!t)return null;
+  var m,y,mo,d,rest;
+  if((m=/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})\s*[,\-–:]?\s*(.*)$/.exec(t))){y=+m[1];mo=+m[2];d=+m[3];rest=m[4];}
+  else if((m=/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})\s*[,\-–:]?\s*(.*)$/.exec(t))){d=+m[1];mo=+m[2];y=+m[3];rest=m[4];}
+  else if((m=/^(\d{1,2})\s+([A-Za-z]{3,})\.?,?\s+(\d{4})\s*[,\-–:]?\s*(.*)$/.exec(t))){d=+m[1];mo=HOL_MONTHS[m[2].slice(0,4).toLowerCase()]||HOL_MONTHS[m[2].slice(0,3).toLowerCase()];y=+m[3];rest=m[4];}
+  else return {error:t};
+  if(!mo||mo<1||mo>12||d<1||d>31)return {error:t};
+  var ds=y+'-'+pad(mo)+'-'+pad(d),chk=new Date(ds+'T00:00:00');
+  if(isNaN(chk)||chk.getDate()!==d)return {error:t};
+  return {date:ds,name:(rest||'').trim()||'Holiday'};
+}
+window.addHolidayList=async function(){
+  var lines=(document.getElementById('hol-bulk').value||'').split(/\n/);
+  var ok=[],bad=[];
+  lines.forEach(function(l){var r=parseHolidayLine(l);if(!r)return;if(r.error)bad.push(r.error);else ok.push(r);});
+  if(!ok.length)return toast(bad.length?'Could not read: '+bad[0]:'Paste at least one line',true);
+  if(bad.length&&!confirm(ok.length+' holiday'+(ok.length!==1?'s':'')+' found. These lines could not be read and will be skipped:\n\n'+bad.join('\n')+'\n\nAdd the rest?'))return;
+  setLoading(true,'Adding holidays…');
+  try{
+    var batch=writeBatch(db);
+    ok.forEach(function(h){batch.set(doc(db,p.day(h.date,null)),{type:'holiday',date:h.date,note:h.name},{merge:true});});
+    await batch.commit();
+    clearMarksCache();
+    document.getElementById('hol-bulk').value='';
+    holYear=parseInt(ok[0].date.slice(0,4));
+    toast('✓ '+ok.length+' holiday'+(ok.length!==1?'s':'')+' added');
+    renderHolidayList();
+  }catch(e){toast('Error: '+e.message,true);}
+  setLoading(false);
+};
+window.deleteHoliday=async function(date){
+  if(!confirm('Remove the holiday on '+date+'?'))return;
+  try{
+    await fbDel(p.day(date,null));
+    clearMarksCache();
+    toast('✓ Holiday removed');renderHolidayList();
+  }catch(e){toast('Error: '+e.message,true);}
 };
 window.manualEntry=async function(){
   const sid=v('manual-staff'),date=v('manual-date'),inT=v('manual-in'),outT=v('manual-out');
@@ -4189,7 +4267,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.22.0</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.22.1</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4666,6 +4744,24 @@ textarea.form-input{resize:none;}
       </div><!-- /card kiosk pin -->
 
       <div class="card">
+        <div class="card-title">🎉 Shop Holidays</div>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Holidays apply to all staff and are paid as set in Pay Rules.</p>
+        <div class="month-nav" style="margin-bottom:10px;"><button onclick="changeHolYear(-1)">‹</button><span id="hol-year-lbl"></span><button onclick="changeHolYear(1)">›</button></div>
+        <div id="hol-list" style="margin-bottom:12px;"></div>
+        <div class="two-col">
+          <div class="form-group"><label class="form-label">Date</label><input type="date" class="form-input" id="hol-date"></div>
+          <div class="form-group"><label class="form-label">Name</label><input class="form-input" id="hol-name" placeholder="e.g. Diwali"></div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="addHoliday()">+ Add Holiday</button>
+        <details style="margin-top:14px;">
+          <summary style="cursor:pointer;font-size:13px;font-weight:700;color:var(--accent);">📋 Add a whole list at once</summary>
+          <p style="font-size:12px;color:var(--muted);margin:8px 0;">One holiday per line — date then name. Examples:<br>20-10-2026 Diwali<br>2026-11-05 Bhai Dooj<br>25/12/2026 Christmas</p>
+          <textarea class="form-input" id="hol-bulk" rows="6" placeholder="20-10-2026 Diwali"></textarea>
+          <button class="btn btn-primary btn-sm" style="margin-top:8px;" onclick="addHolidayList()">Add All</button>
+        </details>
+      </div>
+
+      <div class="card">
         <div class="card-title">Mark Holiday / Leave</div>
         <div class="form-group"><label class="form-label">Date</label><input type="date" class="form-input" id="mark-date"></div>
         <div class="form-group"><label class="form-label">Type</label>
@@ -5134,7 +5230,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.22.0</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.22.1</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -5142,11 +5238,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.22.1 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.22.1</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Settings → 🎉 Shop Holidays: see the whole year's holidays, add one at a time or paste a full list (one per line, e.g. "20-10-2026 Diwali")</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.22.0 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.22.0</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.22.0</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Daily rate is now salary ÷ days in that month — full attendance pays exactly the monthly salary in every month (was salary ÷ 30)</span></div>
