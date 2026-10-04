@@ -1905,7 +1905,9 @@ window.changePayMonth=function(dir){
   renderPayroll();
 };
 
-var payCtxKey='';
+var payCtxKey='',payTimer=null;
+// Typing in Incentive / Recover waits for a pause before recalculating
+window.schedulePayroll=function(){clearTimeout(payTimer);payTimer=setTimeout(function(){renderPayroll();},450);};
 window.renderPayroll=async function(){
   const sid=v('pay-staff-sel'),mv=v('pay-month');
   const out=document.getElementById('payroll-output');
@@ -2131,7 +2133,7 @@ window.renderPayroll=async function(){
       if(shortDays>0){
         shortRow.style.display='flex';
         var shH=Math.floor(shortMins/60),shM=shortMins%60;
-        R('pb-short-lbl','Short Hours ('+shortDays+' day'+(shortDays>1?'s':'')+' · '+shH+'h '+shM+'m) — already in base');
+        R('pb-short-lbl','Short hours: '+shortDays+' day'+(shortDays>1?'s':'')+' · '+shH+'h '+shM+'m less than standard');
         R('pb-short','₹0');
         var pbShortEl=document.getElementById('pb-short');
         if(pbShortEl)pbShortEl.style.color='var(--muted)';
@@ -2159,7 +2161,7 @@ window.renderPayroll=async function(){
     }
 
     // Absent — informational only, no deduction
-    R('pb-absent-lbl','Absent ('+absent+' day'+(absent!==1?'s':'')+') — unpaid via base');
+    R('pb-absent-lbl','Absent: '+absent+' day'+(absent!==1?'s':'')+' (not paid)');
     R('pb-absent','₹0');
     var pbAbsentEl=document.getElementById('pb-absent');
     if(pbAbsentEl)pbAbsentEl.style.color='var(--muted)';
@@ -2184,7 +2186,7 @@ window.renderPayroll=async function(){
       '<div class="stat-box"><div class="stat-num" style="color:var(--red)">'+absent+'</div><div class="stat-lbl">Absent</div></div>'+
       '<div class="stat-box"><div class="stat-num" style="color:var(--accent)">'+late+'</div><div class="stat-lbl">Late</div></div>'+
       '<div class="stat-box"><div class="stat-num" style="color:#a855f7">'+shortDays+'</div><div class="stat-lbl">Short Days</div></div>'+
-      '<div class="stat-box"><div class="stat-num" style="color:var(--blue)">'+offDays+'</div><div class="stat-lbl">Paid Off</div></div>';
+      '<div class="stat-box"><div class="stat-num" style="color:var(--blue)">'+offDays+'</div><div class="stat-lbl">Off / Leave</div></div>';
     var otRateDisp=otRatePerHour>0?'₹'+otRatePerHour+'/hr':'₹0/hr (track only)';
     document.getElementById('pay-ot-detail').textContent=otMins>0?'OT: '+otH+'h '+otM2+'m · '+otRateDisp+' · ₹'+otPay:'No overtime · Std: '+stdHours+'h/day';
     // Store computed values for markAsPaid
@@ -2192,6 +2194,10 @@ window.renderPayroll=async function(){
     out.dataset.advCarryFwd=advCarryFwd;
     out.dataset.totalOutstanding=totalOutstanding;
     const badge=document.getElementById('pay-status-badge');
+    var markBtn=document.getElementById('pay-mark-btn');
+    if(markBtn)markBtn.textContent=payRec?'✓ Update Payment':'✓ Mark as Paid';
+    if(payRec&&newCtx){var pmEl=document.getElementById('pay-mode');if(pmEl&&payRec.mode)pmEl.value=payRec.mode;var pnEl=document.getElementById('pay-note');if(pnEl)pnEl.value=payRec.note||'';}
+    else if(newCtx){var pnEl2=document.getElementById('pay-note');if(pnEl2)pnEl2.value='';}
     if(badge)badge.innerHTML=payRec?'<span class="status-approved">✓ Paid '+payRec.date+' via '+payRec.mode+'</span>':'<span class="status-pending">Unpaid</span>';
   }catch(e){toast('Payroll error: '+e.message,true);}
   setLoading(false);
@@ -2240,13 +2246,26 @@ window.markAsPaid=async function(){
   setLoading(false);
 };
 
+window.renderPayHistory=function(){return renderPayHistory();};
 async function renderPayHistory(){
   const el=document.getElementById('pay-history-list');if(!el)return;
+  const sid=v('pay-staff-sel');
+  const ttl=document.getElementById('pay-history-title');
+  const sf=sid?staffArr.find(function(s){return s.id===sid;}):null;
+  if(ttl)ttl.textContent='Payment History'+(sf?' — '+sf.name:'');
   try{
-    const hist=await fbList(p.payHist(),orderBy('ts','desc'));
+    let hist=await fbList(p.payHist(),orderBy('ts','desc'));
+    if(sid)hist=hist.filter(function(h){return h.staffId===sid;});
+    // one entry per staff + month (older saves of the same month were duplicates)
+    const seen={};hist=hist.filter(function(h){var k=h.staffId+'|'+h.month;if(seen[k])return false;seen[k]=1;return true;});
     if(!hist.length){el.innerHTML='<p style="color:var(--muted);font-size:13px">No payments yet</p>';return;}
-    el.innerHTML=hist.slice(0,20).map(ph=>`
-      <div class="row"><div class="row-main"><div class="row-title">${ph.staffName} · ${ph.net}</div><div class="row-sub">${ph.month} · ${ph.mode} · ${ph.date}${ph.note?' · '+ph.note:''}</div></div><span class="status-approved">Paid</span></div>`).join('');
+    const modeLbl={cash:'💵 Cash',upi:'📱 UPI',bank:'🏦 Bank'};
+    el.innerHTML=(sid?hist:hist.slice(0,20)).map(function(ph){
+      const mLbl=ph.month?new Date(ph.month+'-01T00:00:00').toLocaleString('en-IN',{month:'short',year:'numeric'}):'';
+      return '<div class="row"><div class="row-main"><div class="row-title">'+(sid?'':ksEsc(ph.staffName)+' · ')+ksEsc(mLbl)+' · '+ksEsc(ph.net)+'</div>'+
+        '<div class="row-sub">Paid '+ksEsc(ph.date)+' · '+(modeLbl[ph.mode]||ksEsc(ph.mode))+(ph.advRecovered?' · advance −₹'+Number(ph.advRecovered).toLocaleString('en-IN'):'')+(ph.note?' · '+ksEsc(ph.note):'')+'</div></div>'+
+        '<span class="status-approved">Paid</span></div>';
+    }).join('');
   }catch{el.innerHTML='<p style="color:var(--muted);font-size:13px">Error loading</p>';}
 }
 
@@ -3536,15 +3555,14 @@ window.printSalarySlip=function(){
     if(woPayRowVis) html+='<tr><td>'+g('pb-wopay-lbl')+'</td><td class="r g">'+g('pb-wopay')+'</td></tr>';
     var plRowVis=document.getElementById('pb-paidleave-row')&&document.getElementById('pb-paidleave-row').style.display!=='none';
     if(plRowVis) html+='<tr><td>'+g('pb-paidleave-lbl')+'</td><td class="r g">'+g('pb-paidleave')+'</td></tr>';
-    if(shortRowVis) html+='<tr><td>'+g('pb-short-lbl')+'</td><td class="r" style="color:#888;">'+g('pb-short')+'</td></tr>';
-    html+='<tr><td>'+g('pb-absent-lbl')+'</td><td class="r" style="color:#888;">'+g('pb-absent')+'</td></tr>';
     html+='<tr><td>'+g('pb-late-lbl')+'</td><td class="r re">'+g('pb-late')+'</td></tr>';
+    html+='<tr style="border-top:2px solid #eee;"><td style="font-weight:700;padding-top:10px;">Gross Salary</td><td class="r g" style="padding-top:10px;font-size:15px;">'+g('pb-gross')+'</td></tr>';
     html+='<tr><td>Advance Recovered</td><td class="r re">'+g('pb-advance')+'</td></tr>';
-    html+='<tr style="border-top:2px solid #eee;"><td style="font-weight:700;padding-top:10px;">Gross (before advance)</td><td class="r g" style="padding-top:10px;font-size:15px;">'+g('pb-gross')+'</td></tr>';
     html+='</table>';
     html+='<div class="net"><div class="nl">Net Payable</div><div class="nv">'+g('pb-net')+'</div></div>';
+    html+='<div style="font-size:11px;color:#888;margin-bottom:10px;">'+(shortRowVis?g('pb-short-lbl')+'<br>':'')+g('pb-absent-lbl')+'</div>';
     if(payRec&&payRec.advCarryFwd>0) html+='<div style="font-size:12px;color:#f5a623;font-weight:600;margin-bottom:8px;">Advance carried forward: \u20b9'+payRec.advCarryFwd.toLocaleString('en-IN')+'</div>';
-    if(payRec) html+='<div style="font-size:11px;color:#777;margin-bottom:8px">Paid: '+payRec.mode+' \u00b7 '+payRec.date+(payRec.note?' \u00b7 '+payRec.note:'')+'</div>';
+    if(payRec) html+='<div style="font-size:11px;color:#777;margin-bottom:8px">Paid: '+({cash:'Cash',upi:'UPI',bank:'Bank Transfer'}[payRec.mode]||payRec.mode)+' \u00b7 '+payRec.date+(payRec.note?' \u00b7 '+payRec.note:'')+'</div>';
     html+='<div class="foot">AttendPro \u00b7 '+new Date().toLocaleDateString('en-IN')+'</div>';
     html+='</div></body></html>';
     var w=window.open('','_blank');
@@ -4037,6 +4055,7 @@ textarea.form-input{resize:none;}
 .req-card-title{font-weight:700;font-size:13px;}
 .req-card-meta{font-size:12px;color:var(--muted);margin-bottom:10px;line-height:1.5;}
 .req-card-actions{display:flex;gap:8px;}
+.pay-info .pay-row-lbl,.pay-info .pay-row-val{color:var(--muted)!important;font-size:12px;font-weight:500;}
 .inbox-month{margin-bottom:10px;border:1px solid var(--border);border-radius:var(--r);background:var(--s1);overflow:hidden;}
 .inbox-month>summary{list-style:none;cursor:pointer;padding:14px 16px;display:flex;flex-direction:column;gap:3px;position:relative;padding-right:40px;}
 .inbox-month>summary::-webkit-details-marker{display:none;}
@@ -4091,7 +4110,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.21.3</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.21.4</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4392,7 +4411,7 @@ textarea.form-input{resize:none;}
         <div class="card-title">Payroll Calculator</div>
         <div class="two-col">
           <div class="form-group" style="margin-bottom:0;"><label class="form-label">Staff</label>
-            <select class="form-input form-select" id="pay-staff-sel" onchange="syncAdvStaff(this.value);renderPayroll()"><option value="">Select…</option></select></div>
+            <select class="form-input form-select" id="pay-staff-sel" onchange="syncAdvStaff(this.value);renderPayroll();renderPayHistory()"><option value="">Select…</option></select></div>
           <div class="form-group" style="margin-bottom:0;"><label class="form-label">Month</label>
             <div style="display:flex;align-items:center;gap:6px;">
               <button class="btn btn-ghost btn-xs" onclick="changePayMonth(-1)" style="padding:8px 12px;font-size:18px;line-height:1;">‹</button>
@@ -4419,19 +4438,20 @@ textarea.form-input{resize:none;}
           <div class="pay-row" id="pb-wopay-row" style="display:none;"><span class="pay-row-lbl" id="pb-wopay-lbl">Weekly Off Pay</span><span class="pay-row-val" style="color:var(--green);" id="pb-wopay">+₹0</span></div>
           <div class="pay-row" id="pb-paidleave-row" style="display:none;"><span class="pay-row-lbl" id="pb-paidleave-lbl">Paid Leave</span><span class="pay-row-val" style="color:var(--green);" id="pb-paidleave">+₹0</span></div>
           <div class="pay-section">Deductions</div>
-          <div class="pay-row" id="pb-short-row" style="display:none;"><span class="pay-row-lbl" id="pb-short-lbl">Short Hours</span><span class="pay-row-val" style="color:#a855f7;" id="pb-short">−₹0</span></div>
-          <div class="pay-row"><span class="pay-row-lbl" id="pb-absent-lbl">Absent (0 days)</span><span class="pay-row-val" style="color:var(--red);" id="pb-absent">−₹0</span></div>
           <div class="pay-row"><span class="pay-row-lbl" id="pb-late-lbl">Late (0 days)</span><span class="pay-row-val" style="color:var(--red);" id="pb-late">−₹0</span></div>
-          <div class="pay-row"><span class="pay-row-lbl">Advance Recovered</span><span class="pay-row-val" style="color:var(--red);" id="pb-advance">−₹0</span></div>
           <div class="pay-row" style="border-top:1px solid var(--border);margin-top:4px;padding-top:10px;">
-            <span class="pay-row-lbl" style="font-weight:700;color:var(--text);">Gross (before advance)</span>
+            <span class="pay-row-lbl" style="font-weight:700;color:var(--text);">Gross Salary</span>
             <span class="pay-row-val" style="color:var(--green);font-weight:800;" id="pb-gross">₹0</span>
           </div>
+          <div class="pay-row"><span class="pay-row-lbl">Advance Recovered</span><span class="pay-row-val" style="color:var(--red);" id="pb-advance">−₹0</span></div>
           <div class="net-bar"><div class="net-bar-lbl">Net Payable</div><div class="net-bar-val" id="pb-net">₹0</div></div>
+          <div class="pay-section" style="margin-top:14px;">For information (already counted in base salary)</div>
+          <div class="pay-row pay-info" id="pb-short-row" style="display:none;"><span class="pay-row-lbl" id="pb-short-lbl">Short Hours</span><span class="pay-row-val" id="pb-short">₹0</span></div>
+          <div class="pay-row pay-info"><span class="pay-row-lbl" id="pb-absent-lbl">Absent (0 days)</span><span class="pay-row-val" id="pb-absent">₹0</span></div>
         </div>
         <div class="card">
           <div class="card-title">Adjustments</div>
-          <div class="form-group"><label class="form-label">Sales Incentive (₹)</label><input type="number" class="form-input" id="pay-incentive-inp" placeholder="0" min="0" oninput="renderPayroll()"></div>
+          <div class="form-group"><label class="form-label">Sales Incentive (₹)</label><input type="number" class="form-input" id="pay-incentive-inp" placeholder="0" min="0" oninput="schedulePayroll()"></div>
           <!-- Advance Panel — shown only when outstanding exists -->
           <div id="pay-advance-panel" style="display:none;background:var(--card2,rgba(255,165,0,0.08));border:1.5px solid var(--accent);border-radius:12px;padding:14px;margin-bottom:14px;">
             <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:10px;">⚠️ Advance Outstanding</div>
@@ -4440,7 +4460,7 @@ textarea.form-input{resize:none;}
               <span>Total Outstanding</span><span id="adv-outstanding-total" style="color:var(--accent);">₹0</span></div>
             <div class="form-group" style="margin-bottom:6px;"><label class="form-label">Recover this month (₹)</label>
               <input type="number" class="form-input" id="pay-advance-recover" placeholder="0" min="0"
-                oninput="this.dataset.userEdited='1';renderPayroll()"></div>
+                oninput="this.dataset.userEdited='1';schedulePayroll()"></div>
             <div style="font-size:12px;font-weight:600;margin-top:6px;" id="pb-adv-carry"></div>
           </div>
         </div>
@@ -4452,10 +4472,10 @@ textarea.form-input{resize:none;}
         <div class="card">
           <div class="card-title">Mark Payment</div>
           <div class="form-group"><label class="form-label">Payment Mode</label>
-            <select class="form-input form-select" id="pay-mode"><option value="cash">💵 Cash</option><option value="bank">🏦 Bank Transfer</option></select></div>
+            <select class="form-input form-select" id="pay-mode"><option value="cash">💵 Cash</option><option value="upi">📱 UPI / GPay</option><option value="bank">🏦 Bank Transfer</option></select></div>
           <div class="form-group"><label class="form-label">Note (optional)</label><input class="form-input" id="pay-note" placeholder="e.g. GPay, UPI ref 1234"></div>
           <div style="display:flex;gap:10px;">
-            <button class="btn btn-primary" onclick="markAsPaid()">✓ Mark as Paid</button>
+            <button class="btn btn-primary" id="pay-mark-btn" onclick="markAsPaid()">✓ Mark as Paid</button>
             <button class="btn btn-secondary" onclick="printSalarySlip()" style="width:auto;padding:14px 18px;">🖨️ Slip</button>
           </div>
         </div>
@@ -4472,7 +4492,7 @@ textarea.form-input{resize:none;}
         <button class="btn btn-primary" onclick="giveAdvance()">+ Give Advance</button>
         <div style="margin-top:14px;" id="adv-list"></div>
       </div>
-      <div class="card"><div class="card-title">Payment History</div><div class="scroll-list" id="pay-history-list"><p style="color:var(--muted);font-size:13px;">No payments yet</p></div></div>
+      <div class="card"><div class="card-title" id="pay-history-title">Payment History</div><div class="scroll-list" id="pay-history-list"><p style="color:var(--muted);font-size:13px;">No payments yet</p></div></div>
     </div>
     <!-- STAFF -->
     <div class="page" id="owner-staff">
@@ -5029,7 +5049,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.21.3</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.21.4</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -5037,11 +5057,24 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.21.4 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.21.4</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll breakdown in a clear order: earnings, late deduction, Gross Salary, advance recovered, Net Payable; absent and short hours shown separately as information</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payment History shows only the selected staff member, one entry per month, with mode and advance recovered</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>UPI / GPay payment mode; button reads "Update Payment" for a paid month</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Typing an incentive or advance amount no longer reloads on every key</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.21.3 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.21.3</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.21.3</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll staff list hides inactive staff (shown only if they still owe an advance)</span></div>
