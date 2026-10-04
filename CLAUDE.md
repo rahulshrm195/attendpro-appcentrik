@@ -15,7 +15,8 @@
 
 ## Pending requests (do in the next update, then remove from here)
 - Tab bar runs off the right edge on phones (Payroll/Staff/Settings hidden
-  until swiped): two rows, or a fade + arrow hint. Owner to choose.
+  until swiped): two rows, or a fade + arrow hint. Owner to choose. (QR tab
+  was moved into Settings in v1.22.4, so it is one tab shorter.)
 - Security fix (high priority): Firestore rules are fully open and owner
   passwords / PINs are stored in plain text and readable by anyone. Plan:
   logins via the API, hashed passwords/PINs, then lock the rules.
