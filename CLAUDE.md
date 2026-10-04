@@ -12,3 +12,15 @@
 - `index.html` — the whole app (owner panel, staff app, kiosk, super admin).
 - `sw.js` — service worker (network-first cache).
 - `worker/` — optional Cloudflare Worker API (not deployed yet).
+
+## Pending requests (do in the next update, then remove from here)
+- Show the app version number right beside the logo in the top bar (owner,
+  staff and kiosk screens), so it's easy to check a phone is updated.
+- Tab bar runs off the right edge on phones (Payroll/Staff/Settings hidden
+  until swiped): two rows, or a fade + arrow hint. Owner to choose.
+- Security fix (high priority): Firestore rules are fully open and owner
+  passwords / PINs are stored in plain text and readable by anyone. Plan:
+  logins via the API, hashed passwords/PINs, then lock the rules.
+- Easier AM/PM reading in time lists (e.g. "9:13 pm" vs "9:13 am").
+- Optional: advances report per staff per month.
+- SR Shoes sent a second email about an issue — owner will forward it.
