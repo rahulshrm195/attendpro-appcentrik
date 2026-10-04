@@ -871,7 +871,120 @@ window.showOwnerTab=function(tab,btn){
   if(tab==='staff')renderStaffList();
   if(tab==='settings')loadOwnerSettings();
   if(tab==='qr')renderQRCode();
+  if(tab==='fix')renderFixList();
 };
+
+// ─────────────────────────────────────────────
+//  FIX ATTENDANCE — find and fix problem punches before payroll
+//  (same checks as worker/src/attendance.js detectAnomalies)
+// ─────────────────────────────────────────────
+var fixMonthOff=new Date().getDate()<=10?-1:0; // early in the month → last month (salary time)
+
+function fixMonthInfo(){
+  var d=new Date();d.setDate(1);d.setMonth(d.getMonth()+fixMonthOff);
+  var prefix=d.getFullYear()+'-'+pad(d.getMonth()+1);
+  return {prefix:prefix,label:d.toLocaleString('default',{month:'long',year:'numeric'})};
+}
+window.changeFixMonth=function(n){fixMonthOff+=n;renderFixList();};
+
+function detectPunchProblems(rec,today){
+  var flags=[];
+  var sessions=Array.isArray(rec.sessions)?rec.sessions:[];
+  var t=function(iso){return iso?new Date(iso).getTime():NaN;};
+  if(!sessions.length){
+    if(rec.inTime&&!rec.outTime&&rec.date<today)
+      flags.push({code:'missing_punch_out',sev:'high',session:null,msg:'Never punched out'});
+    return flags;
+  }
+  sessions.forEach(function(s,i){
+    var inT=t(s.inISO),outT=t(s.outISO),n=i+1;
+    if(!s.outTime&&i<sessions.length-1)
+      flags.push({code:'open_session_not_last',sev:'high',session:i,msg:'Session '+n+' has no punch-out but a later session exists'});
+    if(!s.outTime&&i===sessions.length-1&&rec.date<today)
+      flags.push({code:'missing_punch_out',sev:'high',session:i,msg:'Session '+n+' was never punched out'});
+    if(s.outTime&&!isNaN(inT)&&!isNaN(outT)){
+      var mins=(outT-inT)/60000;
+      if(mins<0)flags.push({code:'out_before_in',sev:'high',session:i,msg:'Session '+n+' punch-out is before punch-in'});
+      else if(mins<2)flags.push({code:'tiny_session',sev:'medium',session:i,msg:'Session '+n+' lasted under 2 min (likely a double tap)'});
+      else if(mins>14*60)flags.push({code:'long_session',sev:'medium',session:i,msg:'Session '+n+' lasted '+minsToHM(Math.round(mins))});
+    }
+    if(i>0){
+      var prev=sessions[i-1],prevIn=t(prev.inISO),prevOut=t(prev.outISO);
+      if(!isNaN(inT)&&!isNaN(prevIn)&&Math.abs(inT-prevIn)<120000)
+        flags.push({code:'duplicate_session',sev:'high',session:i,msg:'Session '+n+' starts within 2 min of session '+i+' (double tap)'});
+      else if(!isNaN(inT)&&!isNaN(prevOut)&&inT<prevOut)
+        flags.push({code:'overlapping_sessions',sev:'high',session:i,msg:'Session '+n+' starts before session '+i+' ends'});
+    }
+  });
+  return flags;
+}
+
+window.renderFixList=async function(){
+  var el=document.getElementById('fix-list');if(!el)return;
+  var info=fixMonthInfo();
+  document.getElementById('fix-month-lbl').textContent=info.label;
+  var sel=document.getElementById('fix-staff');
+  var cur=sel.value||'all';
+  sel.innerHTML='<option value="all">All Staff</option>'+staffArr.map(function(s){
+    return '<option value="'+ksEsc(s.id)+'">'+ksEsc(s.name)+'</option>';}).join('');
+  sel.value=staffArr.some(function(s){return s.id===cur;})?cur:'all';
+  el.innerHTML='<div class="empty-state">Checking '+ksEsc(info.label)+'…</div>';
+  try{
+    var recs=await fbList(p.recs(),where('date','>=',info.prefix+'-01'),where('date','<=',info.prefix+'-31'));
+    if(sel.value!=='all')recs=recs.filter(function(r){return r.staffId===sel.value;});
+    var today=todayStr();
+    var bad=[];
+    recs.forEach(function(r){var f=detectPunchProblems(r,today);if(f.length)bad.push({rec:r,flags:f});});
+    bad.sort(function(a,b){return (a.rec.date+(a.rec.staffName||'')).localeCompare(b.rec.date+(b.rec.staffName||''));});
+    var sumEl=document.getElementById('fix-summary');
+    if(!bad.length){
+      sumEl.innerHTML='<span style="color:var(--green);font-weight:700;">✓ No problems</span> in '+recs.length+' attendance record'+(recs.length!==1?'s':'');
+      el.innerHTML='<div class="empty-state"><div class="emoji">✅</div>All clear for '+ksEsc(info.label)+'.<br><br>'+
+        '<button class="btn btn-primary btn-sm" style="display:inline-flex;width:auto;" onclick="showOwnerTab(\'payroll\',document.querySelector(\'#owner-tabs .tab[data-tab=payroll]\'))">Go to Payroll →</button></div>';
+      return;
+    }
+    sumEl.innerHTML='<span style="color:var(--red);font-weight:700;">'+bad.length+' day'+(bad.length!==1?'s':'')+' need fixing</span> out of '+recs.length+' records';
+    el.innerHTML=bad.map(function(b){
+      var r=b.rec,sid=ksEsc(r.staffId),date=ksEsc(r.date);
+      var name=r.staffName||((staffArr.find(function(s){return s.id===r.staffId;})||{}).name)||r.staffId;
+      var sessions=r.sessions&&r.sessions.length?r.sessions:[{inTime:r.inTime,outTime:r.outTime,workedMins:r.workedMins}];
+      var flagged={};b.flags.forEach(function(f){if(f.session!=null)flagged[f.session]=true;});
+      var sessHtml=sessions.map(function(s,i){
+        var dur=s.outTime&&s.workedMins!=null?' · '+minsToHM(s.workedMins):'';
+        var canRemove=sessions.length>1;
+        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;'+(i?'border-top:1px solid var(--border);':'')+'">'+
+          '<div style="font-size:13px;'+(flagged[i]?'color:var(--red);font-weight:700;':'')+'">Session '+(i+1)+': '+ksEsc(s.inTime||'—')+' → '+ksEsc(s.outTime||'no punch-out')+ksEsc(dur)+'</div>'+
+          (canRemove?'<button class="btn btn-ghost btn-xs" style="color:var(--red);border-color:var(--red);flex-shrink:0;" onclick="fixRemoveSession(\''+sid+'\',\''+date+'\','+i+')">🗑️ Remove</button>':'')+
+        '</div>';
+      }).join('');
+      var flagHtml=b.flags.map(function(f){
+        return '<div style="font-size:12px;color:'+(f.sev==='high'?'var(--red)':'var(--accent)')+';margin-top:3px;">⚠ '+ksEsc(f.msg)+'</div>';
+      }).join('');
+      var dupHint=b.flags.some(function(f){return f.code==='duplicate_session'||f.code==='tiny_session';})&&sessions.length>1?
+        '<div style="font-size:11px;color:var(--muted);margin-top:6px;">Double tap? Remove the extra session.</div>':'';
+      return '<div class="card" style="margin-bottom:10px;">'+
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">'+
+          '<div style="font-weight:800;font-size:15px;">'+ksEsc(name)+'</div>'+
+          '<div style="font-size:12px;color:var(--muted);">'+date+'</div></div>'+
+        sessHtml+flagHtml+dupHint+
+        '<button class="btn btn-ghost btn-sm" style="margin-top:10px;border-color:var(--accent);color:var(--accent);" onclick="openEditPunch(\''+sid+'\',\''+date+'\')">✏️ Edit times</button>'+
+      '</div>';
+    }).join('');
+  }catch(e){
+    el.innerHTML='<div class="empty-state">Could not load attendance: '+ksEsc(e.message)+'</div>';
+  }
+};
+
+window.fixRemoveSession=function(staffId,date,idx){
+  document.getElementById('edit-punch-staffid').value=staffId;
+  document.getElementById('edit-punch-date').value=date;
+  deleteSession(idx);
+};
+
+function refreshFixIfOpen(){
+  var pg=document.getElementById('owner-fix');
+  if(pg&&pg.classList.contains('active'))renderFixList();
+}
 
 // ─────────────────────────────────────────────
 //  OWNER TODAY
@@ -1051,7 +1164,7 @@ window.deleteSession=async function(idx){
     });
     closeSheet('sheet-edit-punch');
     toast('✓ Session deleted');
-    renderOwnerToday();renderReport();
+    renderOwnerToday();renderReport();refreshFixIfOpen();
   }catch(e){toast('Error: '+e.message,true);}
   setLoading(false);
 };
@@ -1131,7 +1244,7 @@ window.saveEditPunch=async function(){
       await fbSet(p.rec(staffId,date),newRec);
       closeSheet('sheet-edit-punch');
       toast('✓ Entry added for '+staffName);
-      renderOwnerToday();renderReport();
+      renderOwnerToday();renderReport();refreshFixIfOpen();
       setLoading(false);return;
     }
     if(sessionIdx===-3){
@@ -1154,7 +1267,7 @@ window.saveEditPunch=async function(){
       });
       closeSheet('sheet-edit-punch');
       toast('✓ Session added for '+staffName);
-      renderOwnerToday();renderReport();
+      renderOwnerToday();renderReport();refreshFixIfOpen();
       setLoading(false);return;
     }
     if(!rec){toast('No attendance record found',true);setLoading(false);return;}
@@ -1194,6 +1307,7 @@ window.saveEditPunch=async function(){
     toast('✓ Attendance updated for '+staffName);
     renderOwnerToday();
     renderReport();
+    refreshFixIfOpen();
   }catch(e){toast('Error: '+e.message,true);}
   setLoading(false);
 };
@@ -3592,7 +3706,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.19.0</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.20.0</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -3828,7 +3942,8 @@ textarea.form-input{resize:none;}
       <button class="tab active" onclick="showOwnerTab('today',this)">Today</button>
       <button class="tab" onclick="showOwnerTab('inbox',this)" id="owner-inbox-tab">Inbox</button>
       <button class="tab" onclick="showOwnerTab('reports',this)">Reports</button>
-      <button class="tab" onclick="showOwnerTab('payroll',this)">💰 Payroll</button>
+      <button class="tab" onclick="showOwnerTab('fix',this)">🛠️ Fix</button>
+      <button class="tab" data-tab="payroll" onclick="showOwnerTab('payroll',this)">💰 Payroll</button>
       <button class="tab" onclick="showOwnerTab('staff',this)">Staff</button>
       <button class="tab" onclick="showOwnerTab('settings',this)">Settings</button>
       <button class="tab" onclick="showOwnerTab('qr',this)">QR</button>
@@ -3873,6 +3988,18 @@ textarea.form-input{resize:none;}
           <button class="btn btn-ghost btn-sm" onclick="exportAttendancePDF()" style="flex:1;">🖨️ Print / PDF</button>
         </div>
       </div>
+    </div>
+    <!-- FIX ATTENDANCE -->
+    <div class="page" id="owner-fix">
+      <div class="card">
+        <div class="card-title">🛠️ Fix Attendance</div>
+        <div style="font-size:12px;color:var(--muted);margin-bottom:12px;">Finds double taps, missing punch-outs and overlapping sessions. Fix these before running payroll.</div>
+        <div class="month-nav"><button onclick="changeFixMonth(-1)">‹</button><span id="fix-month-lbl"></span><button onclick="changeFixMonth(1)">›</button></div>
+        <div class="form-group" style="margin:10px 0 0;"><label class="form-label">Staff</label>
+          <select class="form-input form-select" id="fix-staff" onchange="renderFixList()"><option value="all">All Staff</option></select></div>
+        <div id="fix-summary" style="font-size:13px;margin-top:12px;"></div>
+      </div>
+      <div id="fix-list"></div>
     </div>
     <!-- PAYROLL -->
     <div class="page" id="owner-payroll">
@@ -4503,7 +4630,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.19.0</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.20.0</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -4511,11 +4638,22 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.20.0 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.20.0</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>New 🛠️ Fix tab — finds double taps, missing punch-outs and overlapping sessions for any month</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>One-tap Remove for duplicate sessions and Edit times for wrong punches, so payroll is right before you pay</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.19.0 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.19.0</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.19.0</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Leave requests from the shop phone — staff tap "Request Leave" on the kiosk, pick their name, enter their PIN and submit</span></div>
