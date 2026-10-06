@@ -47,7 +47,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.24.1';
+const APP_VERSION = 'v1.25.0';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -4283,10 +4283,10 @@ function deskPing(){if(typeof DK==='undefined'||!DK||!DK.on)return;clearTimeout(
 function dkHost(id){const el=dkEl(id);if(!el)return null;if(!DK.home[id])DK.home[id]={parent:el.parentNode,next:el.nextSibling};el.classList.add('active','dk-hosted');return el;}
 function dkRestorePages(){Object.keys(DK.home).forEach(id=>{const el=dkEl(id),h=DK.home[id];if(!el||!h)return;el.classList.remove('active','dk-hosted');h.parent.insertBefore(el,h.next&&h.next.parentNode===h.parent?h.next:null);});DK.home={};}
 
-const DK_NAV=[['Daily',[['today','Today','<path d="M3 12h4l3-8 4 16 3-8h4"/>'],['attendance','Attendance','<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/>'],['requests','Requests','<path d="M4 4h16v12H5.2L4 17.2z"/><path d="M8 9h8M8 12h5"/>']]],
+const DK_NAV=[['Daily',[['today','Today','<path d="M3 12h4l3-8 4 16 3-8h4"/>'],['attendance','Attendance','<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/>'],['analytics','Analytics','<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>'],['requests','Requests','<path d="M4 4h16v12H5.2L4 17.2z"/><path d="M8 9h8M8 12h5"/>']]],
   ['Month end',[['fix','Fix punches','<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/>'],['payroll','Payroll','<rect x="2" y="6" width="20" height="13" rx="2"/><circle cx="12" cy="12.5" r="3"/>'],['advances','Advances','<path d="M12 2v20M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>']]],
   ['Setup',[['staff','Staff','<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.5"/>'],['settings','Settings','<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>']]]];
-const DK_TITLES={today:'Today',attendance:'Attendance',requests:'Requests',fix:'Fix punches',payroll:'Payroll',advances:'Advances',staff:'Staff',settings:'Settings'};
+const DK_TITLES={today:'Today',attendance:'Attendance',analytics:'Analytics',requests:'Requests',fix:'Fix punches',payroll:'Payroll',advances:'Advances',staff:'Staff',settings:'Settings'};
 function deskShell(){
   dkEl('desk').innerHTML=`<aside class="dk-rail">
     <div class="dk-logo"><div class="dk-mark">AP</div><div><b>AttendPro</b><small>Owner desk</small></div></div>
@@ -4327,7 +4327,7 @@ async function deskRender(quiet){
     if(!quiet&&!['fix','settings'].includes(DK.v))dkEl('dk-page').innerHTML='<div class="dk-empty">Loading…</div>';
     await dkLoadCommon();
     dkNav();
-    await ({today:dkToday,attendance:dkAtt,requests:dkReq,fix:dkFix,payroll:dkPay,advances:dkAdv,staff:dkStaff,settings:dkSettings})[DK.v]();
+    await ({today:dkToday,attendance:dkAtt,analytics:dkAnalytics,requests:dkReq,fix:dkFix,payroll:dkPay,advances:dkAdv,staff:dkStaff,settings:dkSettings})[DK.v]();
     dkCtx();
   }catch(e){dkEl('dk-page').innerHTML='<div class="dk-empty">Could not load: '+ksEsc(e.message)+'</div>';}
   dkRendering=false;
@@ -4604,6 +4604,104 @@ window.deskAddStaff=function(){dkModal(`<header><div class="dk-sp"><h3>Add staff
   <footer><button class="dk-btn pri" id="dk-ago">＋ Add staff</button><button class="dk-btn" onclick="dkCloseModal()">Cancel</button></footer>`);
   dkEl('dk-ago').onclick=async()=>{dkEl('ns-name').value=dkEl('dk-an').value;dkEl('ns-user').value=dkEl('dk-au').value;dkEl('ns-pin').value=dkEl('dk-ap').value;dkEl('ns-joining').value=dkEl('dk-aj').value;
     const before=staffArr.length;await addStaff();if(staffArr.length>before){dkCloseModal();deskRender(true);}};};
+
+
+// ── Analytics: attendance patterns for a month, compared with the month before ──
+// Same day rules as the register: weekly off / holiday / leave days are not expected;
+// a record on an expected day = present (late if marked late); no record before today = absent.
+function dkAnalyze(mv,act,cfgs,recs,marksAll){
+  const [Y,M]=mv.split('-').map(Number),dim=new Date(Y,M,0).getDate(),today=todayStr();
+  const R={};recs.forEach(r=>{if(r.date&&r.date.startsWith(mv))R[r.staffId+'_'+r.date]=r;});
+  const MK={};marksAll.forEach(m=>{if(m.date&&m.date.startsWith(mv))MK[m.date+(m.staffId?'_'+m.staffId:'')]=m;});
+  const days=Array.from({length:dim},(_,i)=>({d:i+1,ds:mv+'-'+pad(i+1),dow:new Date(Y,M-1,i+1).getDay(),ontime:0,late:0,absent:0,expected:0}));
+  const wk=Array.from({length:7},()=>({expected:0,present:0,absent:0}));
+  const buckets=[0,0,0,0,0,0]; // ≤-10 · -10..0 · 1-15 · 16-30 · 31-60 · >60 minutes vs shift start
+  const staff=act.map((s,i)=>{const c=cfgs[i]||defaultSalaryCfg(),st=toMinHHMM(c.startTime||settings.punchInTime||'10:00'),std=Math.round((c.standardHours||calcAutoStdHoursFromCfg(c))*60);
+    const o={s,c,std,expected:0,present:0,late:0,absent:0,extra:0,mins:0,closed:0,ot:0,short:0,arr:[]};
+    days.forEach(D=>{const ds=D.ds;if(ds>today||(s.joiningDate&&ds<s.joiningDate))return;const r=R[s.id+'_'+ds];
+      const hol=MK[ds]&&MK[ds].type==='holiday',lv=MK[ds+'_'+s.id]&&MK[ds+'_'+s.id].type==='leave',wo=c.weeklyOff>=0&&D.dow==c.weeklyOff;
+      if(hol||(lv&&!r))return;
+      if(wo){if(r)o.extra++;return;}
+      if(!r&&ds===today)return; // today not over yet
+      o.expected++;D.expected++;wk[D.dow].expected++;
+      if(!r){o.absent++;D.absent++;wk[D.dow].absent++;return;}
+      o.present++;wk[D.dow].present++;if(r.late){o.late++;D.late++;}else D.ontime++;
+      const ss=dkSessions(r);if(ss.length&&ss[0].in!=null){const dl=ss[0].in-st;o.arr.push(dl);buckets[dl<=-10?0:dl<=0?1:dl<=15?2:dl<=30?3:dl<=60?4:5]++;}
+      if(!dkOpen(r)){const mm=dkLive(r);o.mins+=mm;o.closed++;if(mm>o.std)o.ot+=mm-o.std;else if(mm<o.std)o.short++;}
+    });
+    o.rate=o.expected?o.present/o.expected:null;o.onTime=o.present?(o.present-o.late)/o.present:null;
+    o.avgArr=o.arr.length?Math.round(o.arr.reduce((a,b)=>a+b,0)/o.arr.length):null;o.avgMins=o.closed?o.mins/o.closed:null;return o;});
+  const T=k=>staff.reduce((a,o)=>a+o[k],0);
+  const tot={expected:T('expected'),present:T('present'),late:T('late'),absent:T('absent'),mins:T('mins'),closed:T('closed'),ot:T('ot'),short:T('short'),extra:T('extra')};
+  tot.rate=tot.expected?tot.present/tot.expected:null;tot.onTime=tot.present?(tot.present-tot.late)/tot.present:null;tot.avgMins=tot.closed?tot.mins/tot.closed:null;
+  const arrAll=staff.flatMap(o=>o.arr);tot.avgArr=arrAll.length?Math.round(arrAll.reduce((a,b)=>a+b,0)/arrAll.length):null;
+  return {days:days.filter(D=>D.ds<=today),wk,buckets,staff,tot};
+}
+const dkPct=v=>v==null?'—':Math.round(v*100)+'%';
+const dkSigned=m=>m==null?'—':(m>0?'+':m<0?'−':'')+Math.abs(m)+'m';
+function dkDelta(cur,prev,kind,goodUp){if(cur==null||prev==null)return '<span class="dk-mute">no earlier data</span>';
+  const d=kind==='pct'?Math.round((cur-prev)*100):kind==='h'?Math.round((cur-prev)/6)/10:Math.round(cur-prev);if(!d)return '<span class="dk-mute">same as last month</span>';
+  const good=goodUp?d>0:d<0;return `<span style="color:${good?'var(--green)':'var(--red)'}">${d>0?'▲':'▼'} ${Math.abs(d)}${kind==='pct'?' pts':kind==='h'?'h':''}</span> <span class="dk-mute">vs last month</span>`;}
+async function dkAnalytics(){
+  const mv=DK.anMv||curMonthKey(),pv=dkShiftMv(mv,-1),act=staffArr.filter(s=>s.active);
+  const [recs,marks,cfgs]=await Promise.all([fbList(p.recs(),where('date','>=',pv+'-01'),where('date','<=',mv+'-31')).catch(()=>[]),fbList(p.days()).catch(()=>[]),Promise.all(act.map(s=>getSalaryCfg(s.id).catch(()=>defaultSalaryCfg())))]);
+  const A=dkAnalyze(mv,act,cfgs,recs,marks),B=dkAnalyze(pv,act,cfgs,recs,marks),t=A.tot,b=B.tot;
+  DK.anData=A;
+  // Insights (plain sentences, only when the data supports them)
+  const ins=[];const withP=A.staff.filter(o=>o.present>=3);
+  const lateLead=withP.slice().sort((x,y)=>y.late/y.present-x.late/x.present)[0];
+  if(lateLead&&lateLead.late)ins.push(['warn','⚑',`<b>${ksEsc(lateLead.s.name)}</b> was late on ${lateLead.late} of ${lateLead.present} days, arriving ${dkSigned(lateLead.avgArr)} on average.`]);
+  const absLead=A.staff.slice().sort((x,y)=>y.absent-x.absent)[0];
+  if(absLead&&absLead.absent>=2)ins.push(['bad','!',`<b>${ksEsc(absLead.s.name)}</b> was absent ${absLead.absent} day${absLead.absent>1?'s':''} — the most this month.`]);
+  const wkd=A.wk.map((w,i)=>({i,r:w.expected?w.absent/w.expected:0,n:w.absent})).filter(w=>w.n>=2).sort((x,y)=>y.r-x.r)[0];
+  if(wkd)ins.push(['info','◷',`Most absences fall on <b>${DOW_SHORT[wkd.i]}days</b> (${wkd.n} absent day${wkd.n>1?'s':''}).`]);
+  const otLead=A.staff.slice().sort((x,y)=>y.ot-x.ot)[0];
+  if(otLead&&otLead.ot>=60)ins.push(['good','＋',`<b>${ksEsc(otLead.s.name)}</b> worked the most overtime: ${dkHM(otLead.ot)}.`]);
+  const extra=A.staff.filter(o=>o.extra).map(o=>ksEsc(o.s.name.split(' ')[0])+' ('+o.extra+')');
+  if(extra.length)ins.push(['info','↺',`Came in on their weekly off: ${extra.join(', ')}.`]);
+  if(!ins.length)ins.push(['good','✓','Nothing unusual this month.']);
+  // Chart 1 — daily on-time / late / absent (stacked bars, status colours)
+  const D=A.days,maxD=Math.max(1,...D.map(x=>x.ontime+x.late+x.absent));
+  const daily=`<div class="dk-db"><div class="ax">${[maxD,Math.round(maxD/2),0].map(v=>`<span>${v}</span>`).join('')}</div><div class="cols">${D.map(x=>{const seg=(v,c)=>v?`<i class="${c}" style="height:${v/maxD*100}%"></i>`:'';
+    return `<div class="c" data-tip="${DOW_SHORT[x.dow]} ${x.d} · on time ${x.ontime} · late ${x.late} · absent ${x.absent}"><span class="st">${seg(x.absent,'f-abs')}${seg(x.late,'f-late')}${seg(x.ontime,'f-ok')}</span><span class="lb ${x.dow===0?'sun':''}">${x.d}</span></div>`;}).join('')}</div></div>`;
+  // Chart 2 — arrival time vs shift start
+  const BL=['10m+ early','On time','1–15m late','16–30m late','31–60m late','60m+ late'],maxB=Math.max(1,...A.buckets);
+  const arrival=`<div class="dk-hb">${A.buckets.map((v,i)=>`<div class="r" data-tip="${BL[i]}: ${v} day${v!==1?'s':''}"><span class="lb">${BL[i]}</span><span class="tr"><i class="${i<2?'f-ok':'f-late'}" style="width:${v/maxB*100}%;opacity:${i<2?1:.55+i*.09}"></i></span><b>${v}</b></div>`).join('')}</div>`;
+  // Chart 3 — weekday attendance rate
+  const wkOrder=[1,2,3,4,5,6,0];
+  const weekday=`<div class="dk-vb">${wkOrder.map(i=>{const w=A.wk[i],r=w.expected?w.present/w.expected:null;return `<div class="c" data-tip="${DOW_SHORT[i]}: ${w.present} of ${w.expected} expected days present${w.absent?' · '+w.absent+' absent':''}"><b>${r==null?'—':Math.round(r*100)+'%'}</b><span class="tr"><i class="f-rate" style="height:${r==null?0:Math.max(3,r*100)}%"></i></span><span class="lb">${DOW_SHORT[i]}</span></div>`;}).join('')}</div>`;
+  // Chart 4 — average hours per day vs standard
+  const maxH=Math.max(1,...A.staff.map(o=>Math.max(o.avgMins||0,o.std)));
+  const hours=`<div class="dk-hb">${A.staff.map(o=>`<div class="r" data-tip="${ksEsc(o.s.name)}: ${o.avgMins==null?'no full days':dkHM(o.avgMins)+' a day on average'} · standard ${dkHM(o.std)}"><span class="lb">${ksEsc(o.s.name.split(' ')[0])}</span><span class="tr"><i class="f-hrs" style="width:${(o.avgMins||0)/maxH*100}%"></i><em style="left:${o.std/maxH*100}%"></em></span><b>${o.avgMins==null?'—':dkHM(o.avgMins)}</b></div>`).join('')}</div>`;
+  // Staff table (sortable)
+  const sk=DK.anSort||'rate',dir=DK.anDir||1;
+  const val=(o,k)=>({name:o.s.name.toLowerCase(),rate:o.rate,onTime:o.onTime,avgArr:o.avgArr,avgMins:o.avgMins,ot:o.ot,short:o.short,absent:o.absent,late:o.late}[k]);
+  const rows=A.staff.slice().sort((x,y)=>{const a=val(x,sk),c=val(y,sk);if(a==null)return 1;if(c==null)return -1;return (a>c?1:a<c?-1:0)*dir;});
+  const th=(k,l,r)=>`<th class="${r?'r':''}"><button class="dk-sort" onclick="deskAnSort('${k}')">${l}${sk===k?(dir>0?' ▲':' ▼'):''}</button></th>`;
+  dkEl('dk-page').innerHTML=`<div class="dk-ph"><div><h1>Attendance analytics</h1><p>${dkMonthLabel(mv)}${mv===curMonthKey()?' so far':''} · compared with ${dkMonthLabel(pv)}</p></div><div class="dk-sp"></div>${dkMsw(mv,'deskAnMonth')}</div>
+  <div class="dk-stats">
+    <div class="dk-stat"><div class="l">Attendance</div><div class="v">${dkPct(t.rate)}</div><div class="dk-bar"><i style="width:${(t.rate||0)*100}%;background:var(--green)"></i></div><div class="f"><span>${t.present} of ${t.expected} working days</span></div><div class="f">${dkDelta(t.rate,b.rate,'pct',true)}</div></div>
+    <div class="dk-stat"><div class="l">On time</div><div class="v">${dkPct(t.onTime)}</div><div class="dk-bar"><i style="width:${(t.onTime||0)*100}%;background:var(--green)"></i><i style="width:${t.present?t.late/t.present*100:0}%;background:var(--accent)"></i></div><div class="f"><span>${t.late} late arrivals · avg ${dkSigned(t.avgArr)}</span></div><div class="f">${dkDelta(t.onTime,b.onTime,'pct',true)}</div></div>
+    <div class="dk-stat"><div class="l">Hours per day</div><div class="v">${t.avgMins==null?'—':dkHM(t.avgMins)}</div><div class="f"><span>${t.short} short day${t.short!==1?'s':''}</span></div><div class="f">${dkDelta(t.avgMins,b.avgMins,'h',true)}</div></div>
+    <div class="dk-stat"><div class="l">Overtime</div><div class="v">${dkHM(t.ot)}</div><div class="f"><span>${t.absent} absent day${t.absent!==1?'s':''} · ${t.extra} worked weekly off${t.extra!==1?'s':''}</span></div><div class="f">${dkDelta(t.ot,b.ot,'h',true)}</div></div>
+  </div>
+  <div class="dk-ins">${ins.map(([k,ic,txt])=>`<div class="i ${k}"><span class="ic">${ic}</span><span>${txt}</span></div>`).join('')}</div>
+  <div class="dk-two">
+    <div class="dk-card"><div class="dk-ch"><h2>Day by day</h2><span class="h">Staff on time, late and absent each day</span><span class="dk-sp"></span><div class="dk-key"><span><em class="f-ok"></em>On time</span><span><em class="f-late"></em>Late</span><span><em class="f-abs"></em>Absent</span></div></div><div class="dk-cb">${D.length?daily:'<div class="dk-empty">No days yet</div>'}</div></div>
+    <div class="dk-card"><div class="dk-ch"><h2>Arrival time</h2><span class="h">First punch-in compared with each person's shift start</span></div><div class="dk-cb">${arrival}</div></div>
+    <div class="dk-card"><div class="dk-ch"><h2>By weekday</h2><span class="h">Share of expected days present</span></div><div class="dk-cb">${weekday}</div></div>
+    <div class="dk-card"><div class="dk-ch"><h2>Hours per day</h2><span class="h">Average on full days · line = standard hours</span></div><div class="dk-cb">${hours}</div></div>
+  </div>
+  <div class="dk-card"><div class="dk-ch"><h2>Staff</h2><span class="h">Click a column to sort · click a name for their register</span></div><div class="dk-tw"><table class="dk-t"><thead><tr>${th('name','Staff')}${th('rate','Attendance',1)}${th('onTime','On time',1)}${th('avgArr','Avg arrival',1)}${th('avgMins','Hours / day',1)}${th('ot','Overtime',1)}${th('short','Short days',1)}${th('late','Late',1)}${th('absent','Absent',1)}</tr></thead><tbody>
+  ${rows.map(o=>`<tr class="k" onclick="deskGo('attendance',{regMv:'${mv}'})"><td><div class="dk-who">${dkAv(o.s.id)}<div><b>${ksEsc(o.s.name)}</b><small>${o.present} of ${o.expected} days${o.extra?' · +'+o.extra+' on weekly off':''}</small></div></div></td>
+    <td class="r"><span class="dk-pbar"><i style="width:${(o.rate||0)*100}%"></i></span>${dkPct(o.rate)}</td><td class="r">${dkPct(o.onTime)}</td><td class="r ${o.avgArr>0?'dk-acc':''}">${dkSigned(o.avgArr)}</td><td class="r">${o.avgMins==null?'—':dkHM(o.avgMins)}</td><td class="r">${o.ot?dkHM(o.ot):'—'}</td><td class="r">${o.short||'—'}</td><td class="r">${o.late||'—'}</td><td class="r ${o.absent?'dk-bad':''}">${o.absent||'—'}</td></tr>`).join('')}</tbody></table></div></div>`;
+  dkTipWire();
+}
+window.deskAnMonth=function(d){const mv=dkShiftMv(DK.anMv||curMonthKey(),d);if(mv>curMonthKey())return;DK.anMv=mv;deskRender();};
+window.deskAnSort=function(k){if(DK.anSort===k)DK.anDir=-(DK.anDir||1);else{DK.anSort=k;DK.anDir=k==='name'?1:-1;}deskRender(true);};
+// One floating tooltip for every chart mark with data-tip
+function dkTipWire(){let tip=dkEl('dk-tip');if(!tip){tip=document.createElement('div');tip.id='dk-tip';document.body.appendChild(tip);}
+  dkEl('dk-page').querySelectorAll('[data-tip]').forEach(el=>{el.onmousemove=e=>{tip.textContent=el.getAttribute('data-tip');tip.style.display='block';const x=Math.min(e.clientX+14,window.innerWidth-tip.offsetWidth-8);tip.style.left=x+'px';tip.style.top=(e.clientY+14)+'px';};el.onmouseleave=()=>{tip.style.display='none';};});}
 
 // ── modal + command palette ──
 function dkModal(h){const m=dkEl('dk-modal');m.innerHTML=h;m.style.width='';dkEl('dk-scrim').classList.add('on');const f=m.querySelector('input,select,button:not(.dk-xb)');if(f)f.focus();}
@@ -5145,6 +5243,48 @@ body.dk-body .sheet{border-radius:20px}
 #desk #owner-settings.dk-hosted>p{display:none}
 #desk #owner-fix.dk-hosted #fix-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(460px,1fr));gap:0 14px;align-items:start}
 #dk-back{position:fixed;right:18px;bottom:18px;z-index:400;border:0;border-radius:24px;padding:10px 16px;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));box-shadow:0 8px 24px rgba(0,0,0,.25);cursor:pointer;font-family:var(--fb)}
+.dk-db{display:grid;grid-template-columns:22px minmax(0,1fr);gap:6px;height:190px}
+.dk-db .ax{display:flex;flex-direction:column;justify-content:space-between;font-size:10px;color:var(--muted);text-align:right;padding-bottom:18px}
+.dk-db .cols{display:flex;gap:3px;align-items:stretch;border-bottom:1px solid var(--border);background:repeating-linear-gradient(to top,transparent 0,transparent calc(50% - 10px),var(--border) calc(50% - 10px),transparent calc(50% - 9px))}
+.dk-db .c{flex:1;min-width:0;display:grid;grid-template-rows:1fr 18px;cursor:default}
+.dk-db .st{display:flex;flex-direction:column;justify-content:flex-end;gap:2px}
+.dk-db .st i{display:block;border-radius:3px;min-height:3px}
+.dk-db .c:hover .st i{opacity:.8}
+.dk-db .lb{font-size:9.5px;color:var(--muted);text-align:center;padding-top:4px;font-variant-numeric:tabular-nums}
+.dk-db .lb.sun{color:var(--accent)}
+#desk{background:linear-gradient(90deg,var(--s1) 216px,var(--border) 216px,var(--border) 217px,transparent 217px),var(--bg)}
+/* desk analytics */
+#desk .f-ok{background:var(--green);fill:var(--green)} #desk .f-late{background:var(--accent);fill:var(--accent)} #desk .f-abs{background:var(--red);fill:var(--red)}
+#desk .f-rate,#desk .f-hrs{background:var(--blue)}
+.dk-svgwrap{overflow-x:auto}
+.dk-svg{width:100%;min-width:520px;height:auto;display:block}
+.dk-svg .gl{stroke:var(--border);stroke-width:1}
+.dk-svg .ax{fill:var(--muted);font-size:10px;font-family:var(--fb)}
+.dk-svg .ax.sun{fill:var(--accent)}
+.dk-svg g[data-tip]:hover rect:not([fill=transparent]){opacity:.8}
+.dk-hb{display:grid;gap:9px}
+.dk-hb .r{display:grid;grid-template-columns:110px minmax(0,1fr) 64px;align-items:center;gap:10px;font-size:12.5px}
+.dk-hb .lb{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dk-hb b{text-align:right;font-variant-numeric:tabular-nums}
+.dk-hb .tr{position:relative;height:14px;background:var(--s2);border-radius:4px}
+.dk-hb .tr i{position:absolute;left:0;top:0;bottom:0;border-radius:0 4px 4px 0}
+.dk-hb .tr em{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--text);border-radius:2px}
+.dk-vb{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px;align-items:end;height:190px}
+.dk-vb .c{display:grid;grid-template-rows:auto 1fr auto;gap:6px;height:100%;text-align:center;font-size:12px}
+.dk-vb .c b{font-variant-numeric:tabular-nums}
+.dk-vb .tr{position:relative;background:var(--s2);border-radius:4px}
+.dk-vb .tr i{position:absolute;left:0;right:0;bottom:0;border-radius:4px 4px 0 0}
+.dk-vb .lb{color:var(--muted)}
+.dk-key em.f-ok,.dk-key em.f-late,.dk-key em.f-abs{width:12px;height:12px;border-radius:3px;display:inline-block}
+.dk-ins{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
+.dk-ins .i{display:flex;gap:10px;align-items:flex-start;background:var(--s1);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:13px}
+.dk-ins .ic{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:11px;flex-shrink:0}
+.dk-ins .warn .ic{background:var(--dkw);color:var(--accent)} .dk-ins .bad .ic{background:color-mix(in srgb,var(--red) 15%,transparent);color:var(--red)}
+.dk-ins .info .ic{background:color-mix(in srgb,var(--blue) 15%,transparent);color:var(--blue)} .dk-ins .good .ic{background:color-mix(in srgb,var(--green) 15%,transparent);color:var(--green)}
+.dk-sort{border:0;background:none;padding:0;font:inherit;color:inherit;letter-spacing:inherit;text-transform:inherit;cursor:pointer}
+.dk-pbar{display:inline-block;width:46px;height:6px;border-radius:6px;background:var(--s3);margin-right:8px;vertical-align:middle;overflow:hidden}
+.dk-pbar i{display:block;height:100%;background:var(--green)}
+#dk-tip{position:fixed;z-index:700;display:none;pointer-events:none;background:var(--text);color:var(--bg);font:600 12px/1.4 var(--fb);padding:6px 9px;border-radius:7px;max-width:280px;box-shadow:0 6px 18px rgba(0,0,0,.25)}
 #dk-back[hidden]{display:none}
 @media (max-width:1380px){#desk{grid-template-columns:216px minmax(0,1fr) 0}#desk .dk-ctx{display:none}#desk.dk-ctxwide{grid-template-columns:216px minmax(0,1fr) 300px}#desk.dk-ctxwide .dk-ctx{display:block}.dk-kbtn span{display:none}.dk-kbtn{min-width:0}}
 @media (max-width:1250px){.dk-payg{grid-template-columns:minmax(0,1fr)}.dk-det{position:static;max-height:none}.dk-clock{display:none}}
@@ -5158,7 +5298,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.24.1</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.0</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6167,7 +6307,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.24.1</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.0</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6175,11 +6315,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.25.0 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.0</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Computer layout: new Analytics page — attendance %, on-time %, hours, overtime vs last month, day-by-day and weekday charts, arrival times, insights and a sortable staff table</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.24.1 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.24.1</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.24.1</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Computer payroll: inactive staff only show in a month they actually worked (and still owe an advance) — not in every month after they left</span></div>
