@@ -47,7 +47,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.23.4';
+const APP_VERSION = 'v1.24.0';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -367,6 +367,7 @@ async function boot(){
         if(quickBtn) quickBtn.textContent = pending>0 ? `📬 Inbox (${pending})` : '📬 Inbox';
         const inboxPage=document.getElementById('owner-inbox');
         if(inboxPage?.classList.contains('active')) renderInbox();
+        deskPing();
       });
       return;
     }
@@ -906,10 +907,12 @@ window.ownerLogin=function(){
       // Re-render inbox if it's currently open
       const inboxPage=document.getElementById('owner-inbox');
       if(inboxPage?.classList.contains('active')) renderInbox();
+        deskPing();
     });
   }else{toast('Wrong credentials',true);document.getElementById('owner-pass-inp').value='';}
 };
 window.ownerLogout=function(){
+  document.getElementById('owner-panel-wrap').style.display='none';
   if(_inboxListener){_inboxListener();_inboxListener=null;}
   // Full clear — so user can switch to any business
   localStorage.removeItem('ap_owner_session');
@@ -1179,6 +1182,7 @@ function refreshFixIfOpen(){
 //  OWNER TODAY
 // ─────────────────────────────────────────────
 async function renderOwnerToday(){
+  deskPing();
   const today=todayStr();
   setLoading(true,'Loading today…');
   try{
@@ -1533,6 +1537,7 @@ window.inboxMonthToggle=function(el){
 function dateWithDay(ds){var d=new Date(ds+'T00:00:00');return isNaN(d)?ds:ds+' '+['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()];}
 function localDateStr(ts){var d=new Date(ts);return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());}
 async function renderInbox(){
+  deskPing();
   setLoading(true,'Loading requests…');
   try{
     const reqs=await fbList(p.requests(),orderBy('ts','desc'));
@@ -2045,54 +2050,20 @@ window.applyPayInputs=async function(){
   const paidNow=document.getElementById('pay-mark-btn');
   toast(paidNow&&paidNow.textContent.indexOf('Update')>=0?'Applied · press Update Payment to save it':'✓ Saved for this month');
 };
-window.renderPayroll=async function(){
-  const sid=v('pay-staff-sel'),mv=v('pay-month');
-  const out=document.getElementById('payroll-output');
-  if(!sid||!mv){out.style.display='none';return;}
-  // Incentive / advance inputs belong to one staff + month: reset when either changes
-  const incInp=document.getElementById('pay-incentive-inp');
-  const advInp0=document.getElementById('pay-advance-recover');
-  const ctxKey=sid+'|'+mv;
-  const newCtx=ctxKey!==payCtxKey;
-  if(newCtx){
-    payCtxKey=ctxKey;
-    if(incInp)incInp.value='';
-    if(advInp0){advInp0.value='';delete advInp0.dataset.userEdited;}
-  }
-  const [year,month]=[parseInt(mv.split('-')[0]),parseInt(mv.split('-')[1])-1];
-  const staff=staffArr.find(function(s){return s.id===sid;});if(!staff){out.style.display='none';return;}
-  out.style.display='block';
-  setLoading(true,'Calculating payroll…');
-  try{
-    const cfg=await getSalaryCfg(sid);
-    const payRec=await fbGet(p.payment(sid,mv)).catch(()=>null);
-    if(newCtx&&payRec){
-      if(incInp)incInp.value=payRec.incentive||'';
-      if(advInp0&&payRec.advRecovered!=null){advInp0.value=payRec.advRecovered;advInp0.dataset.userEdited='1';}
-    } else if(newCtx){
-      // Amounts applied earlier but not paid yet
-      const draft=await fbGet(p.payDraft(sid,mv)).catch(()=>null);
-      if(draft){
-        if(incInp)incInp.value=draft.incentive||'';
-        if(advInp0&&draft.advRecover!=null){advInp0.value=draft.advRecover;advInp0.dataset.userEdited='1';}
-      }
-    }
+// ── Salary for one staff + month ──
+// The phone Payroll tab and the computer salary sheet both use this, so the numbers can never differ.
+// opts: {incentive, advRecover (null = default), payRec (optional, already fetched), pre: {recs, marks, ledgers, advs} preloaded for many staff}
+async function computePayroll(sid,mv,opts){
+    opts=opts||{};const pre=opts.pre||{};
+    const staff=staffArr.find(function(s){return s.id===sid;});if(!staff)return null;
+    const year=parseInt(mv.split('-')[0]),month=parseInt(mv.split('-')[1])-1;
+    const cfg=pre.cfgs&&pre.cfgs[sid]?pre.cfgs[sid]:await getSalaryCfg(sid);
+    const payRec=opts.payRec!==undefined?opts.payRec:await fbGet(p.payment(sid,mv)).catch(()=>null);
     const joiningDate=staff.joiningDate||null;
     const prefix=year+'-'+pad(month+1);
-    const ml=new Date(year,month,1).toLocaleString('default',{month:'long',year:'numeric'});
-    document.getElementById('pay-hero-month').textContent=ml;
-    var joiningNotice=document.getElementById('pay-joining-notice');
-    if(joiningNotice){
-      if(joiningDate&&joiningDate.startsWith(prefix)){
-        joiningNotice.style.display='block';
-        joiningNotice.textContent='📅 Joined '+joiningDate+' — partial month';
-      } else {
-        joiningNotice.style.display='none';
-      }
-    }
-    const recsAll=await fbList(p.recs(),where('staffId','==',sid),where('date','>=',prefix+'-01'),where('date','<=',prefix+'-31'));
+    const recsAll=pre.recs?pre.recs.filter(function(r){return r.staffId===sid&&r.date&&r.date.startsWith(prefix);}):await fbList(p.recs(),where('staffId','==',sid),where('date','>=',prefix+'-01'),where('date','<=',prefix+'-31'));
     const recs={};recsAll.forEach(function(r){recs[r.staffId+'_'+r.date]=r;});
-    const marksAll=await fbList(p.days());
+    const marksAll=pre.marks||await fbList(p.days());
     const marks={};marksAll.filter(function(m){return m.date&&m.date.startsWith(prefix);}).forEach(function(m){marks[m.date+(m.staffId?'_'+m.staffId:'')]=m;});
     const dim=new Date(year,month+1,0).getDate();
     const now=new Date(),isCur=(year===now.getFullYear()&&month===now.getMonth());
@@ -2227,22 +2198,93 @@ window.renderPayroll=async function(){
     if(cfg.lateRule==='fixed') lateD=late*(cfg.lateAmount||0);
     else if(cfg.lateRule==='halfday') lateD=Math.floor(late/(cfg.lateHalfAfter||3))*Math.round(perDay/2);
 
-    const incentive=parseInt(v('pay-incentive-inp'))||0;
+    const incentive=opts.incentive||0;
 
     // ── Advance Ledger — single source of truth is advLedger balance ──
-    const ledger=await fbGet(p.advLedger(sid)).catch(()=>null);
+    const ledger=pre.ledgers?pre.ledgers[sid]:await fbGet(p.advLedger(sid)).catch(()=>null);
     const curBalance=ledger&&ledger.balance>0?ledger.balance:0;
     // For a paid month, add back what that payment recovered: the balance before it
     const totalOutstanding=curBalance+(payRec?(payRec.advRecovered||0):0);
     // Split advances: this month vs carry-forward
-    const allAdvs=await fbList(p.advances(),where('staffId','==',sid)).catch(function(){return [];});
+    const allAdvs=pre.advs?pre.advs.filter(function(a){return a.staffId===sid;}):await fbList(p.advances(),where('staffId','==',sid)).catch(function(){return [];});
     const thisMonthAdvs=allAdvs.filter(function(a){return !a.opening&&a.date&&a.date.startsWith(prefix);});
     const thisMonthTotal=thisMonthAdvs.reduce(function(sum,a){return sum+(a.amount||0);},0);
     const carryFwdAmt=Math.max(0,totalOutstanding-thisMonthTotal);
 
+    // Recover this month: what the owner typed, else this month's advances, else the whole balance
+    const defaultRecover=totalOutstanding>0?(thisMonthTotal>0?thisMonthTotal:totalOutstanding):0;
+    const advRecover=Math.min(opts.advRecover!=null?opts.advRecover:defaultRecover, totalOutstanding);
+    var paidLeaveAmt=Math.round(paidLeaveDays*perDay);
+    var holidayPay=holidayPaid?Math.round(holidayDays*perDay):0;
+    const netBeforeAdv=Math.max(0,basePay+otPay+incentive+weeklyOffBonus+woPay+paidLeaveAmt+holidayPay-lateD);
+    const advActual=Math.min(advRecover,netBeforeAdv);
+    const net=Math.max(0,netBeforeAdv-advActual);
+    const advCarryFwd=totalOutstanding-advActual;
+
+    return {staff,cfg,payRec,year,month,prefix,dim,upto,joiningDate,stdHours,stdMins,otRatePerHour,
+      workDays,present,absent,late,offDays,totalWorkedMins,shortMins,shortDays,otMins,
+      weeklyOffWorkedMins,weeklyOffWorked,weeklyOffPaidDays,paidLeaveDays,holidayDays,holidayPaid,
+      perDay,eligibleDays,basePay,otPay,weeklyOffBonus,woPaid,woPay,lateD,incentive,
+      totalOutstanding,thisMonthAdvs,thisMonthTotal,carryFwdAmt,defaultRecover,advRecover,
+      paidLeaveAmt,holidayPay,netBeforeAdv,advActual,net,advCarryFwd};
+}
+
+window.renderPayroll=async function(){
+  const sid=v('pay-staff-sel'),mv=v('pay-month');
+  const out=document.getElementById('payroll-output');
+  if(!sid||!mv){out.style.display='none';return;}
+  // Incentive / advance inputs belong to one staff + month: reset when either changes
+  const incInp=document.getElementById('pay-incentive-inp');
+  const advInp0=document.getElementById('pay-advance-recover');
+  const ctxKey=sid+'|'+mv;
+  const newCtx=ctxKey!==payCtxKey;
+  if(newCtx){
+    payCtxKey=ctxKey;
+    if(incInp)incInp.value='';
+    if(advInp0){advInp0.value='';delete advInp0.dataset.userEdited;}
+  }
+  const [year,month]=[parseInt(mv.split('-')[0]),parseInt(mv.split('-')[1])-1];
+  const staff=staffArr.find(function(s){return s.id===sid;});if(!staff){out.style.display='none';return;}
+  out.style.display='block';
+  setLoading(true,'Calculating payroll…');
+  try{
+    const cfg=await getSalaryCfg(sid);
+    const payRec=await fbGet(p.payment(sid,mv)).catch(()=>null);
+    if(newCtx&&payRec){
+      if(incInp)incInp.value=payRec.incentive||'';
+      if(advInp0&&payRec.advRecovered!=null){advInp0.value=payRec.advRecovered;advInp0.dataset.userEdited='1';}
+    } else if(newCtx){
+      // Amounts applied earlier but not paid yet
+      const draft=await fbGet(p.payDraft(sid,mv)).catch(()=>null);
+      if(draft){
+        if(incInp)incInp.value=draft.incentive||'';
+        if(advInp0&&draft.advRecover!=null){advInp0.value=draft.advRecover;advInp0.dataset.userEdited='1';}
+      }
+    }
+    const joiningDate=staff.joiningDate||null;
+    const prefix=year+'-'+pad(month+1);
+    const ml=new Date(year,month,1).toLocaleString('default',{month:'long',year:'numeric'});
+    document.getElementById('pay-hero-month').textContent=ml;
+    var joiningNotice=document.getElementById('pay-joining-notice');
+    if(joiningNotice){
+      if(joiningDate&&joiningDate.startsWith(prefix)){
+        joiningNotice.style.display='block';
+        joiningNotice.textContent='📅 Joined '+joiningDate+' — partial month';
+      } else {
+        joiningNotice.style.display='none';
+      }
+    }
+    const advInput=document.getElementById('pay-advance-recover');
+    const C=await computePayroll(sid,mv,{payRec:payRec,incentive:parseInt(v('pay-incentive-inp'))||0,
+      advRecover:advInput&&advInput.dataset.userEdited?(parseInt(advInput.value)||0):null});
+    const {dim,stdHours,otRatePerHour,present,absent,late,offDays,totalWorkedMins,shortMins,shortDays,otMins,
+      weeklyOffWorkedMins,weeklyOffWorked,weeklyOffPaidDays,paidLeaveDays,holidayDays,perDay,basePay,otPay,
+      weeklyOffBonus,woPaid,woPay,lateD,incentive,totalOutstanding,thisMonthAdvs,thisMonthTotal,carryFwdAmt,
+      paidLeaveAmt,holidayPay,netBeforeAdv,advActual,net,advCarryFwd}=C;
+    const perDayR=Math.round(perDay);
+    var otH=Math.floor(otMins/60),otM2=otMins%60;
     // Show advance panel
     const advPanel=document.getElementById('pay-advance-panel');
-    const advInput=document.getElementById('pay-advance-recover');
     if(advPanel){
       if(totalOutstanding>0){
         advPanel.style.display='block';
@@ -2261,14 +2303,6 @@ window.renderPayroll=async function(){
         if(advInput) advInput.value=0;
       }
     }
-
-    const advRecover=Math.min(parseInt(advInput&&advInput.value)||0, totalOutstanding);
-    var paidLeaveAmt=Math.round(paidLeaveDays*perDay);
-    var holidayPay=holidayPaid?Math.round(holidayDays*perDay):0;
-    const netBeforeAdv=Math.max(0,basePay+otPay+incentive+weeklyOffBonus+woPay+paidLeaveAmt+holidayPay-lateD);
-    const advActual=Math.min(advRecover,netBeforeAdv);
-    const net=Math.max(0,netBeforeAdv-advActual);
-    const advCarryFwd=totalOutstanding-advActual;
 
     const R=function(id,val){const el=document.getElementById(id);if(el)el.textContent=val;};
     R('pay-net-amount','₹'+net.toLocaleString('en-IN'));R('pb-net','₹'+net.toLocaleString('en-IN'));
@@ -2378,15 +2412,19 @@ window.markAsPaid=async function(){
   if(!sid||!mv)return toast('Select staff and month',true);
   if(payDirty)return toast('Press Apply first so the salary includes the new incentive / advance',true);
   const out=document.getElementById('payroll-output');
-  const net=document.getElementById('pb-net').textContent;
-  const mode=v('pay-mode'),note=v('pay-note');
-  const advActual=parseInt(out.dataset.advActual)||0;
-  const incentiveSaved=parseInt(v('pay-incentive-inp'))||0;
+  const ok=await recordPayment(sid,mv,{net:document.getElementById('pb-net').textContent,mode:v('pay-mode'),note:v('pay-note'),
+    advActual:parseInt(out.dataset.advActual)||0,incentive:parseInt(v('pay-incentive-inp'))||0});
+  if(ok){await renderPayroll();renderPayHistory();renderAdvList();populatePayrollDropdowns();}
+};
+// Saves a payment, its history entry and the advance ledger together. Used by the phone and computer layouts.
+// Returns true when saved. a: {net ('₹1,234'), mode, note, advActual, incentive, skipConfirm}
+async function recordPayment(sid,mv,a){
+  const net=a.net,mode=a.mode,note=a.note||'',advActual=a.advActual||0,incentiveSaved=a.incentive||0;
   const staffName=(staffArr.find(function(s){return s.id===sid;})||{}).name||sid;
   setLoading(true,'Recording payment…');
   try{
     const prev=await fbGet(p.payment(sid,mv)).catch(()=>null);
-    if(prev&&!confirm(staffName+' was already marked paid on '+prev.date+' ('+prev.net+').\n\nUpdate that payment? The advance balance will be corrected, not deducted twice.')){setLoading(false);return;}
+    if(prev&&!a.skipConfirm&&!confirm(staffName+' was already marked paid on '+prev.date+' ('+prev.net+').\n\nUpdate that payment? The advance balance will be corrected, not deducted twice.')){setLoading(false);return false;}
     // Balance before this month's recovery = current balance + what an earlier save of this month recovered
     const ledger=await fbGet(p.advLedger(sid)).catch(()=>null);
     const curBal=ledger&&ledger.balance>0?ledger.balance:0;
@@ -2408,14 +2446,13 @@ window.markAsPaid=async function(){
         recovered:recovered,previouslyRecovered:prevRecovered,balanceBefore:curBal,balanceAfter:balAfter,date:new Date().toLocaleDateString('en-IN'),ts:Date.now()});
     }
     await batch.commit();
-    await renderPayroll();
-    renderPayHistory();
-    renderAdvList();
-    populatePayrollDropdowns();
+    setLoading(false);
     toast(prev?'✓ Payment updated · Advance balance corrected':'✓ Payment marked · Advance ledger updated');
+    return true;
   }catch(e){toast('Error: '+e.message,true);}
   setLoading(false);
-};
+  return false;
+}
 
 window.renderPayHistory=function(){return renderPayHistory();};
 async function renderPayHistory(){
@@ -2490,6 +2527,7 @@ window.giveQuickAdvance=async function(){
 };
 
 async function renderAdvList(){
+  deskPing();
   const el=document.getElementById('adv-list');if(!el)return;
   try{
     // ── Repair: fix any advances from approved requests that missed ledger update ──
@@ -2723,6 +2761,7 @@ window.addStaff=async function(){
 };
 
 function renderStaffList(){
+  deskPing();
   const el=document.getElementById('staff-list-display');if(!el)return;
   if(!staffArr.length){el.innerHTML='<div class="empty-state"><div class="emoji">👥</div>No staff yet</div>';var iw=document.getElementById('staff-inactive-card');if(iw)iw.style.display='none';return;}
   // Active staff here; disabled staff in their own card below
@@ -4199,6 +4238,394 @@ function sendNotif(title, body, tag='ap-notif'){
 //  KICK OFF
 // ─────────────────────────────────────────────
 boot();
+
+// ═════════════════════════════════════════════════════════════════
+//  COMPUTER LAYOUT ("desk") — owner panel on screens 1100px and wider.
+//  Phones keep the classic panel. Both read the same data and use the same
+//  functions (computePayroll, recordPayment, openEditPunch, approveReq …).
+// ═════════════════════════════════════════════════════════════════
+var DK={on:false,v:'today',mv:null,regMv:null,sel:null,pf:'all',tf:'all',pick:new Set(),edits:{},req:null,stab:'active',advSel:null,data:{},home:{}};
+const deskMQ=window.matchMedia('(min-width:1100px)');
+const dkEl=id=>document.getElementById(id);
+const dkName=sid=>{const s=staffArr.find(x=>x.id===sid);return s?s.name:sid;};
+const dkInr=n=>'₹'+Math.round(n||0).toLocaleString('en-IN');
+const dkHM=m=>{m=Math.max(0,Math.round(m||0));return Math.floor(m/60)+'h '+pad(m%60)+'m';};
+const dkT12=m=>{const h=Math.floor(m/60),x=m%60;return ((h%12)||12)+':'+pad(x)+' '+(h>=12?'pm':'am');};
+const DK_COLORS=['#e0831f','#d9443a','#2f6fe0','#1b9a6a','#7b4ae0','#d6407f','#0e9aa7','#b0721a'];
+function dkAv(sid){const i=Math.max(0,staffArr.findIndex(s=>s.id===sid));const nm=dkName(sid);return '<span class="dk-av" style="background:'+DK_COLORS[i%DK_COLORS.length]+'">'+ksEsc(nm.split(/\s+/).slice(0,2).map(w=>w[0]||'').join('').toUpperCase())+'</span>';}
+const dkMonthLabel=mv=>{const [y,m]=mv.split('-').map(Number);return new Date(y,m-1,1).toLocaleString('en-IN',{month:'long',year:'numeric'});};
+const dkShiftMv=(mv,d)=>{const [y,m]=mv.split('-').map(Number);const x=new Date(y,m-1+d,1);return x.getFullYear()+'-'+pad(x.getMonth()+1);};
+// Minutes after midnight for a session time (ISO preferred, else "9:05 AM")
+function dkMin(iso,t12){if(iso){const d=new Date(iso);if(!isNaN(d))return d.getHours()*60+d.getMinutes();}if(t12){const [h,m]=parseTime12(t12);return h*60+m;}return null;}
+function dkSessions(r){if(!r)return [];const ss=r.sessions&&r.sessions.length?r.sessions:[{inTime:r.inTime,outTime:r.outTime,inISO:r.inISO,outISO:r.outISO,workedMins:r.workedMins}];
+  return ss.map(s=>({in:dkMin(s.inISO,s.inTime),out:s.outTime?dkMin(s.outISO,s.outTime):null,mins:s.workedMins||0}));}
+const dkOpen=r=>!!r&&(r.sessions&&r.sessions.length?r.sessions.some(s=>!s.outTime):!r.outTime);
+const dkNowMin=()=>{const d=new Date();return d.getHours()*60+d.getMinutes();};
+function dkLive(r){return dkSessions(r).reduce((a,s)=>a+(s.out!=null?(s.mins||Math.max(0,s.out-s.in)):Math.max(0,dkNowMin()-(s.in||0))),0);}
+
+// ── on / off ──
+function deskWanted(){const w=dkEl('owner-panel-wrap');return deskMQ.matches&&localStorage.getItem('ap_classic')!=='1'&&!!w&&w.style.display==='block';}
+function deskSync(){
+  const want=deskWanted(),scr=dkEl('screen-owner');if(!scr)return;
+  document.body.classList.toggle('dk-body',want);
+  if(want&&!DK.on){DK.on=true;scr.classList.add('desk-on');dkEl('desk').hidden=false;deskShell();deskRender();}
+  else if(!want&&DK.on){DK.on=false;dkRestorePages();scr.classList.remove('desk-on');dkEl('desk').hidden=true;}
+  const back=dkEl('dk-back');if(back)back.hidden=!(deskMQ.matches&&localStorage.getItem('ap_classic')==='1'&&dkEl('owner-panel-wrap').style.display==='block');
+}
+window.deskClassic=function(on){try{localStorage.setItem('ap_classic',on?'1':'0');}catch(e){}if(on&&DK.on){DK.on=false;dkRestorePages();dkEl('screen-owner').classList.remove('desk-on');dkEl('desk').hidden=true;showOwnerTab('today',document.querySelector('#owner-tabs .tab'));}deskSync();};
+deskMQ.addEventListener('change',deskSync);
+new MutationObserver(deskSync).observe(document.getElementById('owner-panel-wrap'),{attributes:true,attributeFilter:['style']});
+let dkPingT=null;
+// Called by the classic render functions after any change, so the desk refreshes too
+function deskPing(){if(typeof DK==='undefined'||!DK||!DK.on)return;clearTimeout(dkPingT);dkPingT=setTimeout(()=>{deskRender(true);},350);}
+
+// Existing pages that the desk shows as they are (moved in, and back out on leave)
+function dkHost(id){const el=dkEl(id);if(!el)return null;if(!DK.home[id])DK.home[id]={parent:el.parentNode,next:el.nextSibling};el.classList.add('active','dk-hosted');return el;}
+function dkRestorePages(){Object.keys(DK.home).forEach(id=>{const el=dkEl(id),h=DK.home[id];if(!el||!h)return;el.classList.remove('active','dk-hosted');h.parent.insertBefore(el,h.next&&h.next.parentNode===h.parent?h.next:null);});DK.home={};}
+
+const DK_NAV=[['Daily',[['today','Today','<path d="M3 12h4l3-8 4 16 3-8h4"/>'],['attendance','Attendance','<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/>'],['requests','Requests','<path d="M4 4h16v12H5.2L4 17.2z"/><path d="M8 9h8M8 12h5"/>']]],
+  ['Month end',[['fix','Fix punches','<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/>'],['payroll','Payroll','<rect x="2" y="6" width="20" height="13" rx="2"/><circle cx="12" cy="12.5" r="3"/>'],['advances','Advances','<path d="M12 2v20M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>']]],
+  ['Setup',[['staff','Staff','<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><circle cx="17" cy="9" r="2.5"/>'],['settings','Settings','<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>']]]];
+const DK_TITLES={today:'Today',attendance:'Attendance',requests:'Requests',fix:'Fix punches',payroll:'Payroll',advances:'Advances',staff:'Staff',settings:'Settings'};
+function deskShell(){
+  dkEl('desk').innerHTML=`<aside class="dk-rail">
+    <div class="dk-logo"><div class="dk-mark">AP</div><div><b>AttendPro</b><small>Owner desk</small></div></div>
+    <div class="dk-shop"><div class="dk-st"><span>● ONLINE</span><span>${ksEsc(APP_VERSION)}</span></div><b>${ksEsc(biz.name||'')}</b><span>Shop opens ${ksEsc(settings.punchInTime||'10:00')}</span></div>
+    <div id="dk-nav"></div>
+    <div class="dk-bottom"><button class="dk-qp" onclick="deskQuickPunch()">＋ Quick punch</button>
+      <button class="dk-link" onclick="deskClassic(true)">Use classic view</button></div>
+  </aside>
+  <main class="dk-work"><div class="dk-cmd"><div class="dk-crumb">${ksEsc(biz.name||'')} / <b id="dk-crumb">Today</b></div><div class="dk-sp"></div>
+    <button class="dk-kbtn" onclick="deskPalette()">⌕ <span>Search staff or jump to…</span><kbd>⌘K</kbd></button>
+    <div class="dk-clock" id="dk-clock"></div>
+    <button class="dk-tb" onclick="deskQuickPunch()">＋ Punch</button><button class="dk-tb" onclick="openQuickAdvance()">₹ Advance</button>
+    <button class="dk-tb dk-ic" onclick="deskToggleCtx()" title="Show or hide the activity panel" aria-label="Activity panel">▤</button>
+    <button class="dk-tb dk-ic" onclick="toggleTheme()" title="Switch theme" aria-label="Switch theme">🌓</button>
+    <button class="dk-tb dk-ic" onclick="openProfile()" title="Profile" aria-label="Profile">👤</button>
+    <button class="dk-tb" onclick="ownerLogout()">Logout</button></div>
+    <div class="dk-page" id="dk-page"></div></main>
+  <aside class="dk-ctx" id="dk-ctx"></aside>`;
+  dkClock();
+}
+function dkClock(){const el=dkEl('dk-clock');if(!el)return;const d=new Date();el.textContent='◷ '+d.toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'})+' · '+dkT12(d.getHours()*60+d.getMinutes());}
+setInterval(()=>{if(DK.on)dkClock();},30000);
+// Today page refreshes itself every minute (skipped while a pop-up is open)
+setInterval(()=>{if(DK.on&&DK.v==='today'&&!document.querySelector('.sheet-overlay.open')&&!dkEl('dk-scrim').classList.contains('on'))deskRender(true);},60000);
+let dkCtxPref=null;
+window.deskToggleCtx=function(){const d=dkEl('desk');if(window.innerWidth<=1380){d.classList.toggle('dk-ctxwide');return;}d.classList.toggle('dk-noctx');dkCtxPref=!d.classList.contains('dk-noctx');};
+function dkNav(){const pend=(DK.data.pending||[]).length,fx=DK.data.fixCount||0;
+  dkEl('dk-nav').innerHTML=DK_NAV.map(([g,items])=>'<div class="dk-navg">'+g+'</div><nav class="dk-nav">'+items.map(([k,l,ic])=>{const n=k==='requests'?pend:k==='fix'?fx:0;
+    return '<button class="'+(DK.v===k?'on':'')+'" onclick="deskGo(\''+k+'\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+ic+'</svg>'+l+(n?'<span class="n">'+n+'</span>':'')+'</button>';}).join('')+'</nav>').join('');}
+window.deskGo=function(v,opt){DK.v=v;Object.assign(DK,opt||{});dkCloseModal();deskRender();window.scrollTo(0,0);};
+let dkRendering=false;
+async function deskRender(quiet){
+  if(!DK.on||dkRendering)return;dkRendering=true;
+  try{
+    dkRestorePages();
+    const d=dkEl('desk');if(dkCtxPref===null)d.classList.toggle('dk-noctx',!['today','requests'].includes(DK.v));
+    dkEl('dk-crumb').textContent=DK_TITLES[DK.v];
+    if(!quiet&&!['fix','settings'].includes(DK.v))dkEl('dk-page').innerHTML='<div class="dk-empty">Loading…</div>';
+    await dkLoadCommon();
+    dkNav();
+    await ({today:dkToday,attendance:dkAtt,requests:dkReq,fix:dkFix,payroll:dkPay,advances:dkAdv,staff:dkStaff,settings:dkSettings})[DK.v]();
+    dkCtx();
+  }catch(e){dkEl('dk-page').innerHTML='<div class="dk-empty">Could not load: '+ksEsc(e.message)+'</div>';}
+  dkRendering=false;
+}
+// Data every page needs: today's punches, pending requests, last month's punch problems (cached a minute)
+async function dkLoadCommon(){
+  const today=todayStr();
+  const [recs,reqs]=await Promise.all([fbList(p.recs(),where('date','==',today)).catch(()=>[]),fbList(p.requests(),orderBy('ts','desc')).catch(()=>[])]);
+  DK.data.today=recs;DK.data.reqs=reqs;DK.data.pending=reqs.filter(r=>r.status==='pending');
+  const pm=prevMonthKey();
+  if(!DK.data.fixAt||Date.now()-DK.data.fixAt>60000){
+    const mrecs=await fbList(p.recs(),where('date','>=',pm+'-01'),where('date','<=',pm+'-31')).catch(()=>[]);
+    DK.data.fixCount=mrecs.filter(r=>detectPunchProblems(r,today).length).length;DK.data.fixAt=Date.now();
+  }
+}
+
+// ── Context rail: quick punch, approvals, today's activity ──
+function dkCtx(){
+  const today=todayStr(),act=staffArr.filter(s=>s.active),recs={};(DK.data.today||[]).forEach(r=>recs[r.staffId]=r);
+  const ev=[];(DK.data.today||[]).forEach(r=>{dkSessions(r).forEach((s,i,arr)=>{if(s.in!=null)ev.push({m:s.in,c:'in',a:'→',t:'<b>'+ksEsc(dkName(r.staffId))+'</b> punched in'+(arr.length>1?' · session '+(i+1):'')});if(s.out!=null)ev.push({m:s.out,c:'out',a:'←',t:'<b>'+ksEsc(dkName(r.staffId))+'</b> punched out · '+dkHM(s.mins||s.out-s.in)});});});
+  ev.sort((a,b)=>b.m-a.m);
+  const pend=DK.data.pending||[];
+  dkEl('dk-ctx').innerHTML=`<div class="dk-blk"><h3>Quick punch <span class="dk-sp"></span><span class="dk-tag off">forgotten punches</span></h3>
+    <select id="dk-qs" class="dk-inp" aria-label="Staff">${act.map(s=>'<option value="'+ksEsc(s.id)+'">'+ksEsc(s.name)+(recs[s.id]&&dkOpen(recs[s.id])?' — in shop':recs[s.id]?' — done':'')+'</option>').join('')}</select>
+    <button class="dk-btn pri" style="justify-content:center" onclick="deskPunchFor(document.getElementById('dk-qs').value)">Add or edit today's punch</button></div>
+  ${pend.length?`<div class="dk-blk"><h3>Waiting for you <span class="dk-tag warn">${pend.length}</span></h3>${pend.slice(0,6).map(r=>`<div class="dk-ap"><div class="dk-who">${dkAv(r.staffId)}<div><b>${ksEsc(r.staffName||dkName(r.staffId))}</b><small>${r.type==='advance'?'Advance '+dkInr(r.amount):'Leave '+ksEsc(r.from||'')+(r.to&&r.to!==r.from?' → '+ksEsc(r.to):'')} · ${r.ts?new Date(r.ts).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'}):''}</small></div></div>
+    <div class="dk-row"><button class="dk-btn sm pri" onclick="approveReq('${ksEsc(r.id)}')">Approve</button><button class="dk-btn sm red" onclick="rejectReq('${ksEsc(r.id)}')">Reject</button><button class="dk-btn sm" onclick="deskGo('requests',{req:'${ksEsc(r.id)}'})">Details</button></div></div>`).join('')}</div>`:''}
+  <div class="dk-blk" style="border-bottom:0"><h3>Today's activity <span class="dk-sp"></span><span class="dk-live">● LIVE</span></h3>
+    ${ev.length?ev.slice(0,14).map(e=>`<div class="dk-ev"><span class="ico ${e.c}">${e.a}</span><div>${e.t}<small>${dkT12(e.m)}</small></div></div>`).join(''):'<div class="dk-mute" style="font-size:12.5px">No punches yet today.</div>'}</div>`;
+}
+window.deskPunchFor=async function(sid){if(!sid)return;const today=todayStr();const r=(DK.data.today||[]).find(x=>x.staffId===sid);if(r)openEditPunch(sid,today);else openAddEntry(sid,today);};
+window.deskQuickPunch=function(){const d=dkEl('desk');d.classList.remove('dk-noctx');if(window.innerWidth<=1380)d.classList.add('dk-ctxwide');setTimeout(()=>{const s=dkEl('dk-qs');if(s)s.focus();},30);};
+
+// ── Today: stat cards, alerts, shift timeline ──
+async function dkToday(){
+  const today=todayStr(),now=dkNowMin(),dow=new Date().getDay(),act=staffArr.filter(s=>s.active);
+  const cfgs=await Promise.all(act.map(s=>getSalaryCfg(s.id).catch(()=>defaultSalaryCfg())));
+  const recs={};(DK.data.today||[]).forEach(r=>recs[r.staffId]=r);
+  const rows=act.map((s,i)=>{const c=cfgs[i]||defaultSalaryCfg(),r=recs[s.id],st=toMinHHMM(c.startTime||settings.punchInTime||'10:00'),en=toMinHHMM(c.endTime||'21:00'),ss=dkSessions(r);
+    let k='out';if(c.weeklyOff>=0&&dow==c.weeklyOff&&!r)k='off';else if(r&&dkOpen(r))k='in';else if(r)k='done';else if(now<st)k='due';
+    return {s,c,r,ss,k,st,en,std:(c.standardHours||calcAutoStdHoursFromCfg(c))*60,lateBy:ss.length&&ss[0].in!=null?ss[0].in-st:0};});
+  const n=k=>rows.filter(x=>x.k===k).length,came=rows.filter(x=>x.r).length,late=rows.filter(x=>x.r&&x.lateBy>0),tot=rows.reduce((a,x)=>a+(x.r?dkLive(x.r):0),0),plan=rows.reduce((a,x)=>a+x.std,0);
+  const midOpen=rows.filter(x=>x.ss.length>1&&dkOpen(x.r));
+  const F=DK.tf,show=rows.filter(x=>F==='all'||x.k===F||(F==='out'&&x.k==='due'));
+  const allMins=rows.flatMap(x=>[x.st,x.en,...x.ss.map(s=>s.in),...x.ss.map(s=>s.out)]).filter(v=>v!=null);
+  const H0=Math.min(9,Math.floor(Math.min(...allMins,600)/60)),H1=Math.max(23,Math.ceil(Math.max(...allMins,now)/60)),pct=m=>(m/60-H0)/(H1-H0)*100;
+  const fx=DK.data.fixCount||0,pm=prevMonthKey();
+  dkEl('dk-page').innerHTML=`<div class="dk-ph"><div><h1>Today on the shop floor</h1><p>${new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</p></div><div class="dk-sp"></div><button class="dk-btn" onclick="deskGo('attendance')">Open month register →</button></div>
+  <div class="dk-stats">
+    <div class="dk-stat"><div class="l">On duty${n('out')?'<span class="dk-tag bad">'+n('out')+' not in</span>':''}</div><div class="v">${came} / ${rows.length}<small>came in</small></div><div class="dk-bar"><i style="width:${rows.length?n('done')/rows.length*100:0}%;background:var(--blue)"></i><i style="width:${rows.length?n('in')/rows.length*100:0}%;background:var(--green)"></i></div><div class="f"><span>In shop <b>${n('in')}</b></span><span>Done <b>${n('done')}</b></span></div></div>
+    <div class="dk-stat"><div class="l">Punctuality${late.length?'<span class="dk-tag warn">'+late.length+' late</span>':''}</div><div class="v">${came-late.length}<small>on time</small></div><div class="dk-bar"><i style="width:${came?(came-late.length)/came*100:0}%;background:var(--green)"></i><i style="width:${came?late.length/came*100:0}%;background:var(--accent)"></i></div><div class="f"><span>After shift start</span><span>${late.length?'<b>'+late.length+'</b> late':'—'}</span></div></div>
+    <div class="dk-stat"><div class="l">Hours on floor</div><div class="v">${dkHM(tot)}</div><div class="dk-bar"><i style="width:${plan?Math.min(100,tot/plan*100):0}%;background:var(--purple)"></i></div><div class="f"><span>Of planned ${Math.round(plan/60)}h</span><span>Avg <b>${came?dkHM(tot/came):'—'}</b></span></div></div>
+    <div class="dk-stat"><div class="l">Before payday</div><div class="v">${fx}<small>punch problems</small></div><div class="dk-bar"><i style="width:${fx?100:0}%;background:var(--red)"></i></div><div class="f"><span>${dkMonthLabel(pm)}</span>${fx?'<a href="#" onclick="deskGo(\'fix\');return false" class="dk-acc">Fix now</a>':'<span>All clear</span>'}</div></div>
+  </div>
+  ${midOpen.length?`<div class="dk-alert bad"><span class="ic">!</span><div class="t"><b>Back in, not punched out:</b> ${midOpen.map(x=>ksEsc(x.s.name)+' since '+dkT12(x.ss[x.ss.length-1].in)).join(' · ')}</div>${midOpen.map(x=>`<button class="dk-btn sm red" onclick="deskPunchFor('${ksEsc(x.s.id)}')">Fix ${ksEsc(x.s.name.split(' ')[0])}</button>`).join('')}</div>`:''}
+  ${late.length?`<div class="dk-alert"><span class="ic">⚑</span><div class="t"><b>${late.length} came late:</b> ${late.map(x=>ksEsc(x.s.name)+' <span class="dk-mute">'+dkT12(x.ss[0].in)+' · +'+x.lateBy+'m</span>').join(' · ')}</div></div>`:''}
+  <div class="dk-card"><div class="dk-ch"><h2>Shift timeline</h2><span class="h">Bars are punches · grey is the planned shift · striped means still in</span><span class="dk-sp"></span>
+    <div class="dk-chips">${[['all','Everyone',rows.length],['in','In shop',n('in')],['done','Done',n('done')],['out','Not in',n('out')+n('due')],['off','Weekly off',n('off')]].map(([k,l,c])=>`<button class="dk-chip ${F===k?'on':''}" onclick="DK_setTf('${k}')">${l}<b>${c}</b></button>`).join('')}</div></div>
+    <div class="dk-tl"><div class="hd"></div><div class="hd">${Array.from({length:H1-H0+1},(_,i)=>i%2===0?`<span style="left:${i/(H1-H0)*100}%">${((H0+i)%12)||12}${H0+i>=12?'p':'a'}</span>`:'').join('')}</div><div class="hd" style="text-align:right;padding-right:14px">Worked</div>
+    ${show.map(x=>{const lbl={in:['good','In shop'],done:['info','Done'],out:['bad','Not in'],due:['off','Due '+dkT12(x.st)],off:['off','Weekly off']}[x.k];
+      return `<div class="row"><div class="nm" onclick="deskPunchFor('${ksEsc(x.s.id)}')" title="Add or edit today's punch"><div class="dk-who">${dkAv(x.s.id)}<div><b>${ksEsc(x.s.name)}</b><small><span class="dk-tag ${lbl[0]} d">${lbl[1]}</span>${x.lateBy>0?' <span class="dk-tag warn">+'+x.lateBy+'m</span>':''}</small></div></div></div>
+      <div><div class="trk">${Array.from({length:H1-H0+1},(_,i)=>`<span class="g" style="left:${i/(H1-H0)*100}%"></span>`).join('')}
+        ${x.k!=='off'?`<span class="sh" style="left:${pct(x.st)}%;width:${Math.max(0,pct(x.en)-pct(x.st))}%"></span>`:''}
+        ${x.ss.filter(s=>s.in!=null).map(s=>{const e=s.out!=null?s.out:now;return `<span class="sg ${s.out==null?'open':''}" style="left:${pct(s.in)}%;width:${Math.max(.6,pct(e)-pct(s.in))}%" title="${dkT12(s.in)} → ${s.out!=null?dkT12(s.out):'still in'}"></span><span class="lb" style="left:${pct(s.in)}%">${dkT12(s.in)}</span>`;}).join('')}
+        ${x.lateBy>0?`<span class="lt" style="left:${pct(x.ss[0].in)}%"></span>`:''}<span class="now" style="left:${pct(now)}%"></span></div></div>
+      <div class="tot">${x.r?dkHM(dkLive(x.r)):'—'}</div></div>`;}).join('')||'<div class="dk-empty" style="grid-column:1/-1">Nobody here</div>'}</div></div>`;
+}
+window.DK_setTf=function(k){DK.tf=k;deskRender(true);};
+function toMinHHMM(t){const [h,m]=String(t||'0:0').split(':').map(Number);return (h||0)*60+(m||0);}
+
+// ── Attendance register: every person × every day ──
+async function dkAtt(){
+  const mv=DK.regMv||curMonthKey(),[Y,M]=mv.split('-').map(Number),dim=new Date(Y,M,0).getDate(),today=todayStr();
+  const act=staffArr.filter(s=>s.active);
+  const [recs,marksAll,cfgs]=await Promise.all([fbList(p.recs(),where('date','>=',mv+'-01'),where('date','<=',mv+'-31')).catch(()=>[]),fbList(p.days()).catch(()=>[]),Promise.all(act.map(s=>getSalaryCfg(s.id).catch(()=>defaultSalaryCfg())))]);
+  const R={};recs.forEach(r=>R[r.staffId+'_'+r.date]=r);const MK={};marksAll.forEach(m=>{if(m.date&&m.date.startsWith(mv))MK[m.date+(m.staffId?'_'+m.staffId:'')]=m;});
+  const D=Array.from({length:dim},(_,i)=>i+1);
+  const body=act.map((s,i)=>{const c=cfgs[i]||defaultSalaryCfg(),std=(c.standardHours||calcAutoStdHoursFromCfg(c))*60;let P=0,A=0,L=0,T=0;
+    const cells=D.map(d=>{const ds=mv+'-'+pad(d),dw=new Date(Y,M-1,d).getDay(),r=R[s.id+'_'+ds],hol=MK[ds],lv=MK[ds+'_'+s.id];let k,t='';
+      if(ds>today||(s.joiningDate&&ds<s.joiningDate))k='F';else if(hol&&hol.type==='holiday'){k='H';t=hol.note||'Holiday';}
+      else if(lv&&lv.type==='leave'&&!r){k='L';t='Leave'+(lv.note?' · '+lv.note:'');}else if(c.weeklyOff>=0&&dw==c.weeklyOff)k=r?'WW':'WO';
+      else if(!r)k=ds===today?'F':'A';else{const mm=dkLive(r);k=!dkOpen(r)&&mm<std/2?'S':'P';}
+      if(r){T+=dkLive(r);if(k==='P'||k==='S'||k==='WW')P++;if(r.late)L++;}if(k==='A')A++;
+      const code={P:'P',A:'A',H:'H',L:'L',WO:'',WW:'P',S:'½',F:''}[k];
+      return `<td><button class="dc ${k}" ${k==='F'&&!r?'disabled':''} onclick="deskCell('${ksEsc(s.id)}','${ds}',${r?1:0})" title="${ksEsc(DOW_SHORT[dw]+' '+d+(t?' · '+t:''))}">${code}${r&&r.late?'<i></i>':''}</button></td>`;}).join('');
+    return `<tr><td class="nm"><div class="dk-who">${dkAv(s.id)}<div><b>${ksEsc(s.name)}</b><small>${c.weeklyOff>=0?'Off '+DOW_SHORT[c.weeklyOff]+' · ':''}${ksEsc(c.startTime||'')}–${ksEsc(c.endTime||'')}</small></div></div></td>${cells}<td class="s g">${P}</td><td class="s b">${A}</td><td class="s w">${L}</td><td class="s">${Math.round(T/60)}h</td></tr>`;}).join('');
+  dkEl('dk-page').innerHTML=`<div class="dk-ph"><div><h1>Attendance register</h1><p>Click a day to see, add or fix punches.</p></div><div class="dk-sp"></div>${dkMsw(mv,'deskRegMonth')}</div>
+  <div class="dk-card"><div class="dk-ch"><div class="dk-key"><span><em style="background:color-mix(in srgb,var(--green) 18%,transparent)"></em>Present</span><span><em style="background:color-mix(in srgb,var(--purple) 18%,transparent)"></em>Short day</span><span><em style="background:color-mix(in srgb,var(--red) 16%,transparent)"></em>Absent</span><span><em style="background:var(--s3)"></em>Weekly off</span><span><em style="background:color-mix(in srgb,var(--green) 18%,transparent);box-shadow:inset 0 0 0 2px var(--blue)"></em>Worked weekly off</span><span><em style="background:color-mix(in srgb,var(--blue) 18%,transparent)"></em>Holiday</span><span><em style="background:color-mix(in srgb,var(--accent) 22%,transparent)"></em>Leave</span><span><em style="background:var(--accent);width:7px;height:7px;border-radius:50%"></em>Late</span></div></div>
+  <div class="dk-reg-wrap"><table class="dk-reg"><thead><tr><th class="nm">Staff</th>${D.map(d=>{const w=new Date(Y,M-1,d).getDay();return `<th class="${w===0?'sun':''}">${DOW_SHORT[w][0]}<br><b>${d}</b></th>`;}).join('')}<th class="s">Pres.</th><th class="s">Abs.</th><th class="s">Late</th><th class="s">Hours</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+}
+const DOW_SHORT=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+window.deskCell=function(sid,ds,has){if(has)openEditPunch(sid,ds);else openAddEntry(sid,ds);};
+window.deskRegMonth=function(d){const mv=dkShiftMv(DK.regMv||curMonthKey(),d);if(mv>curMonthKey())return;DK.regMv=mv;deskRender();};
+function dkMsw(mv,fn){return `<div class="dk-msw"><button onclick="${fn}(-1)" aria-label="Previous month">‹</button><span>${dkMonthLabel(mv)}</span><button onclick="${fn}(1)" ${mv>=curMonthKey()?'disabled':''} aria-label="Next month">›</button></div>`;}
+
+// ── Requests: list + detail ──
+async function dkReq(){
+  const all=(DK.data.reqs||[]).filter(r=>r.status==='pending'||(r.ts&&Date.now()-r.ts<62*86400000));
+  if(!all.length){dkEl('dk-page').innerHTML='<div class="dk-ph"><div><h1>Requests</h1></div></div><div class="dk-card dk-empty">No requests in the last two months.</div>';return;}
+  const r=all.find(x=>x.id===DK.req)||all[0];DK.req=r.id;
+  const tag=x=>x.status==='pending'?'<span class="dk-tag warn d">Pending</span>':x.status==='approved'?'<span class="dk-tag good d">Approved</span>':'<span class="dk-tag bad d">Rejected</span>';
+  const when=x=>x.ts?new Date(x.ts).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'}):'';
+  let extra='';
+  if(r.type==='advance'){const [lg,cfg]=await Promise.all([fbGet(p.advLedger(r.staffId)).catch(()=>null),getSalaryCfg(r.staffId).catch(()=>defaultSalaryCfg())]);const bal=lg&&lg.balance>0?lg.balance:0;
+    extra=`<dt>Asked for</dt><dd>${dkInr(r.amount)}</dd><dt>Owes now</dt><dd>${dkInr(bal)}</dd>${r.status==='pending'?`<dt>Would owe</dt><dd class="dk-acc">${dkInr(bal+(r.amount||0))}</dd>`:''}<dt>Monthly salary</dt><dd>${dkInr(cfg.base)}</dd>`;}
+  else extra=`<dt>Dates</dt><dd>${ksEsc(r.from||'')}${r.to&&r.to!==r.from?' to '+ksEsc(r.to):''}</dd><dt>Type</dt><dd>${r.leaveType==='half'?'Half day':r.leaveType==='custom'?'Custom hours':'Full day'}</dd><dt>Pay</dt><dd>${settings.inboxLeavePaid===true?'Paid':'Unpaid'} (Pay rules)</dd>`;
+  dkEl('dk-page').innerHTML=`<div class="dk-ph"><div><h1>Requests</h1><p>By the date staff asked. Pending first.</p></div></div>
+  <div class="dk-split"><div class="dk-card">${all.sort((a,b)=>(a.status==='pending'?0:1)-(b.status==='pending'?0:1)||(b.ts||0)-(a.ts||0)).map(x=>`<div class="dk-li ${x.id===r.id?'sel':''}" onclick="deskGo('requests',{req:'${ksEsc(x.id)}'})">${dkAv(x.staffId)}<div class="x"><div style="display:flex;justify-content:space-between;gap:6px"><b>${ksEsc(x.staffName||dkName(x.staffId))}</b>${tag(x)}</div><div class="dk-mute" style="font-size:12px">${x.type==='advance'?'Advance '+dkInr(x.amount):'Leave '+ksEsc(x.from||'')}</div><div class="dk-mute" style="font-size:11px">${when(x)}</div></div></div>`).join('')}</div>
+  <div class="dk-card"><div class="dk-ch">${dkAv(r.staffId)}<div><h2>${ksEsc(r.staffName||dkName(r.staffId))}</h2><span class="h">${r.type==='advance'?'Advance':'Leave'} · asked ${when(r)}</span></div><span class="dk-sp"></span>${tag(r)}</div>
+  <div class="dk-cb" style="display:grid;gap:16px"><dl class="dk-kv">${extra}<dt>Reason</dt><dd>${ksEsc(r.reason||'—')}</dd>${r.ownerNote?'<dt>Your note</dt><dd>'+ksEsc(r.ownerNote)+'</dd>':''}</dl>
+  ${r.status==='pending'?`<div class="dk-row"><button class="dk-btn pri" onclick="approveReq('${ksEsc(r.id)}')">✓ Approve</button><button class="dk-btn red" onclick="rejectReq('${ksEsc(r.id)}')">Reject</button></div>`:''}</div></div></div>`;
+}
+
+// ── Fix + Settings: the existing pages, shown inside the desk ──
+async function dkFix(){const pg=dkEl('dk-page');pg.innerHTML='<div class="dk-ph"><div><h1>Fix punches</h1><p>Clear these before paying salaries.</p></div></div>';const el=dkHost('owner-fix');if(el){pg.appendChild(el);await renderFixList();}}
+async function dkSettings(){const pg=dkEl('dk-page');pg.innerHTML='<div class="dk-ph"><div><h1>Settings</h1><p>Tap a section to open it.</p></div></div>';const el=dkHost('owner-settings');if(el){pg.appendChild(el);loadOwnerSettings();renderHolidayList();renderQRCode();}}
+
+// ── Payroll: step tracker + salary sheet + detail panel ──
+async function dkPay(){
+  const mv=DK.mv||(DK.mv=prevMonthKey()),cur=mv===curMonthKey(),today=todayStr();
+  const ledgersArr=await Promise.all(staffArr.map(s=>fbGet(p.advLedger(s.id)).catch(()=>null)));
+  const ledgers={};staffArr.forEach((s,i)=>ledgers[s.id]=ledgersArr[i]);
+  const list=staffArr.filter(s=>s.active||(ledgers[s.id]&&ledgers[s.id].balance>0));
+  const [recs,marks,advs,cfgA,payA,draftA]=await Promise.all([fbList(p.recs(),where('date','>=',mv+'-01'),where('date','<=',mv+'-31')).catch(()=>[]),fbList(p.days()).catch(()=>[]),fbList(p.advances()).catch(()=>[]),
+    Promise.all(list.map(s=>getSalaryCfg(s.id).catch(()=>defaultSalaryCfg()))),Promise.all(list.map(s=>fbGet(p.payment(s.id,mv)).catch(()=>null))),Promise.all(list.map(s=>fbGet(p.payDraft(s.id,mv)).catch(()=>null)))]);
+  const cfgs={};list.forEach((s,i)=>cfgs[s.id]=cfgA[i]);
+  const pre={recs,marks,advs,ledgers,cfgs};
+  const E=DK.edits[mv]||(DK.edits[mv]={});
+  const rows=[];
+  for(let i=0;i<list.length;i++){const s=list[i],pay=payA[i],dr=draftA[i];
+    const saved={inc:pay?(pay.incentive||0):(dr&&dr.incentive)||0,adv:pay?(pay.advRecovered!=null?pay.advRecovered:null):(dr&&dr.advRecover!=null?dr.advRecover:null)};
+    const C=await computePayroll(s.id,mv,{pre,payRec:pay,incentive:saved.inc,advRecover:saved.adv});
+    const e=E[s.id];const changed=!pay&&e&&(e.inc!==saved.inc||e.adv!==(saved.adv!=null?saved.adv:C.advRecover));
+    rows.push({s,C,pay,saved,e,changed,prob:recs.filter(r=>r.staffId===s.id&&detectPunchProblems(r,today).length).length});}
+  DK.payRows=rows;
+  if(!DK.sel||!rows.some(x=>x.s.id===DK.sel))DK.sel=(rows.find(x=>!x.pay)||rows[0]||{s:{}}).s.id;
+  const paidN=rows.filter(x=>x.pay).length,chN=rows.filter(x=>x.changed).length,incN=rows.filter(x=>x.C.incentive>0).length,fixN=rows.reduce((a,x)=>a+x.prob,0);
+  [...DK.pick].forEach(id=>{const x=rows.find(r=>r.s.id===id);if(!x||x.pay||x.changed||cur)DK.pick.delete(id);});
+  const T=k=>rows.reduce((a,x)=>a+(x.C[k]||0),0),unpaid=rows.filter(x=>!x.pay);
+  const PF=DK.pf,fl=x=>PF==='all'||(PF==='check'&&(x.prob||x.changed))||(PF==='ready'&&!x.pay&&!x.prob&&!x.changed)||(PF==='paid'&&x.pay);
+  const cnt=k=>rows.filter(x=>k==='check'?(x.prob||x.changed):k==='ready'?(!x.pay&&!x.prob&&!x.changed):!!x.pay).length;
+  const step=(n,done,now,t,sm,on)=>`<button class="dk-step ${done?'done':now?'now':''}" onclick="${on}"><span class="dot">${done?'✓':n}</span><span><b>${t}</b><small>${sm}</small></span></button>`;
+  const pickNet=[...DK.pick].reduce((a,id)=>a+rows.find(r=>r.s.id===id).C.net,0);
+  const val=(x,k)=>x.e?x.e[k]:(k==='inc'?x.saved.inc:(x.saved.adv!=null?x.saved.adv:x.C.advRecover));
+  dkEl('dk-page').innerHTML=`<div class="dk-ph"><div><h1>Payroll · ${dkMonthLabel(mv)}</h1><p>${cur?'This month is still running — the numbers only count days up to today.':'Check punches, enter incentives, then pay. The slip gets a PAID stamp after you mark it paid.'}</p></div><div class="dk-sp"></div>${dkMsw(mv,'deskPayMonth')}</div>
+  <div class="dk-steps">${step(1,!fixN,fixN>0,'Check punches',fixN?fixN+' day'+(fixN>1?'s':'')+' with problems':'No problems',"deskGo('fix')")}${step(2,!chN&&!fixN&&incN>0,!fixN&&chN>0,'Incentives & advances',chN?chN+' not saved':incN+' of '+rows.length+' have incentive',"document.getElementById('dk-sheet').scrollIntoView({behavior:'smooth'})")}${step(3,rows.length&&paidN===rows.length,!fixN&&!chN&&paidN<rows.length,'Pay',paidN+' of '+rows.length+' paid',"document.getElementById('dk-sheet').scrollIntoView({behavior:'smooth'})")}${step(4,false,rows.length&&paidN===rows.length,'Slips','PAID stamp after paying',"deskSlip(DK.sel)")}</div>
+  <div class="dk-stats"><div class="dk-stat"><div class="l">Cash to hand over</div><div class="v">${dkInr(T('net'))}</div><div class="f"><span>Gross <b>${dkInr(T('netBeforeAdv'))}</b></span><span>${rows.length} staff</span></div></div>
+    <div class="dk-stat"><div class="l">Advance recovered</div><div class="v dk-acc">${dkInr(T('advActual'))}</div><div class="f"><span>Still owed after</span><b>${dkInr(rows.reduce((a,x)=>a+(x.C.advCarryFwd||0),0))}</b></div></div>
+    <div class="dk-stat"><div class="l">Incentives & OT</div><div class="v" style="color:var(--green)">${dkInr(T('incentive')+T('otPay'))}</div><div class="f"><span>Incentive <b>${dkInr(T('incentive'))}</b></span><span>OT <b>${dkInr(T('otPay'))}</b></span></div></div>
+    <div class="dk-stat"><div class="l">Paid</div><div class="v">${paidN} / ${rows.length}</div><div class="dk-bar"><i style="width:${rows.length?paidN/rows.length*100:0}%;background:var(--green)"></i></div><div class="f"><span>Unpaid</span><b>${dkInr(unpaid.reduce((a,x)=>a+x.C.net,0))}</b></div></div></div>
+  <div class="dk-payg"><div style="display:grid;gap:10px;min-width:0" id="dk-sheet">
+    <div class="dk-chips">${[['all','All',rows.length],['check','Needs a look',cnt('check')],['ready','Ready to pay',cnt('ready')],['paid','Paid',cnt('paid')]].map(([k,l,n])=>`<button class="dk-chip ${PF===k?'on':''}" onclick="DK.pf='${k}';deskRender(true)">${l}<b>${n}</b></button>`).join('')}</div>
+    <div class="dk-card"><div class="dk-tw"><table class="dk-t"><thead><tr><th style="width:28px"><input type="checkbox" class="dk-cbx" onchange="deskPickAll(this.checked)" aria-label="Select all ready" ${cur?'disabled':''}></th><th>Staff</th><th class="r">P / A</th><th class="r">Incentive</th><th class="r">Advance</th><th class="r">Net pay</th><th>Status</th></tr></thead><tbody>
+    ${rows.filter(fl).map(x=>{const s=x.s,C=x.C,can=!x.pay&&!x.changed&&!cur,paidAmt=x.pay?(x.pay.netAmount!=null?x.pay.netAmount:parseInt(String(x.pay.net||'').replace(/[^0-9]/g,''))||0):0;
+      return `<tr class="k ${DK.sel===s.id?'sel':''} ${x.changed?'chg':''}" onclick="deskSel('${ksEsc(s.id)}')">
+      <td><input type="checkbox" class="dk-cbx" ${DK.pick.has(s.id)?'checked':''} ${can?'':'disabled'} onclick="event.stopPropagation()" onchange="deskPick('${ksEsc(s.id)}',this.checked)" aria-label="Select ${ksEsc(s.name)}"></td>
+      <td><div class="dk-who">${dkAv(s.id)}<div><b>${ksEsc(s.name)}${s.active?'':' <span class="dk-tag off">inactive</span>'}</b><small>${dkInr(C.cfg.base)} · ${x.prob?'<span class="dk-bad">punch problem</span>':C.totalOutstanding>0&&!x.pay?'owes '+dkInr(C.totalOutstanding):'no advance'}</small></div></div></td>
+      <td class="r" style="white-space:nowrap">${C.present} / <span class="${C.absent?'dk-bad':''}">${C.absent}</span></td>
+      <td class="r"><input class="dk-ci ${x.e&&x.e.inc!==x.saved.inc?'chg':''}" type="number" min="0" inputmode="numeric" value="${val(x,'inc')||''}" placeholder="0" ${x.pay?'disabled':''} onclick="event.stopPropagation()" oninput="deskEdit('${ksEsc(s.id)}','inc',this.value)" onkeydown="if(event.key==='Enter')deskSaveAll()" aria-label="Incentive for ${ksEsc(s.name)}"></td>
+      <td class="r">${C.totalOutstanding>0||x.pay?`<input class="dk-ci ${x.changed&&x.e&&x.e.adv!==(x.saved.adv!=null?x.saved.adv:C.advRecover)?'chg':''}" type="number" min="0" inputmode="numeric" value="${val(x,'adv')||''}" placeholder="0" ${x.pay?'disabled':''} onclick="event.stopPropagation()" oninput="deskEdit('${ksEsc(s.id)}','adv',this.value)" onkeydown="if(event.key==='Enter')deskSaveAll()" aria-label="Advance from ${ksEsc(s.name)}">`:'<span class="dk-mute">—</span>'}</td>
+      <td class="r"><b>${dkInr(C.net)}</b></td>
+      <td>${x.pay?`<span class="dk-tag good d">Paid ${ksEsc(x.pay.date||'')}</span>${paidAmt!==C.net?' <span class="dk-tag warn" title="Now calculates '+dkInr(C.net)+'">changed</span>':''}`:x.changed?'<span class="dk-tag brand d">Not saved</span>':x.prob?'<span class="dk-tag bad d">Check</span>':'<span class="dk-tag off d">Ready</span>'}</td></tr>`;}).join('')||'<tr><td colspan="7" class="dk-empty">Nobody here</td></tr>'}</tbody>
+    <tfoot><tr><td></td><td>Total</td><td></td><td class="r">${dkInr(T('incentive'))}</td><td class="r">${dkInr(T('advActual'))}</td><td class="r">${dkInr(T('net'))}</td><td></td></tr></tfoot></table></div></div>
+    <div class="dk-selbar" id="dk-savebar" ${chN?'':'hidden'}><span><b id="dk-chn">${chN}</b> changed — salaries update when you save</span><span class="dk-sp"></span><button class="dk-btn ghost" onclick="deskUndo()">Undo</button><button class="dk-btn pri" onclick="deskSaveAll()">Save all</button></div>
+    <div class="dk-selbar" ${DK.pick.size&&!chN?'':'hidden'}><span><b>${DK.pick.size}</b> selected · <b>${dkInr(pickNet)}</b></span><span class="dk-sp"></span><button class="dk-btn ghost" onclick="DK.pick.clear();deskRender(true)">Clear</button><button class="dk-btn pri" onclick="deskPayPicked()">Pay selected</button></div>
+  </div><div class="dk-card dk-det" id="dk-det"></div></div>`;
+  dkDetail();
+}
+window.deskPayMonth=function(d){const mv=dkShiftMv(DK.mv||prevMonthKey(),d);if(mv>curMonthKey())return;DK.mv=mv;DK.pick.clear();deskRender();};
+window.deskSel=function(sid){DK.sel=sid;document.querySelectorAll('#dk-sheet tr.k').forEach(tr=>tr.classList.toggle('sel',tr.getAttribute('onclick').indexOf("'"+sid+"'")>=0));dkDetail();};
+window.deskPick=function(sid,on){on?DK.pick.add(sid):DK.pick.delete(sid);deskRender(true);};
+window.deskPickAll=function(on){(DK.payRows||[]).forEach(x=>{if(!x.pay&&!x.changed)on?DK.pick.add(x.s.id):DK.pick.delete(x.s.id);});deskRender(true);};
+// Typing only marks the row as changed; amounts count after Save all / Apply (same rule as the phone)
+window.deskEdit=function(sid,k,v){const mv=DK.mv,E=DK.edits[mv]||(DK.edits[mv]={}),x=(DK.payRows||[]).find(r=>r.s.id===sid);if(!x)return;
+  const base={inc:x.saved.inc,adv:x.saved.adv!=null?x.saved.adv:x.C.advRecover};const e=E[sid]||(E[sid]=Object.assign({},base));
+  e[k]=k==='adv'?Math.min(parseInt(v)||0,x.C.totalOutstanding):(parseInt(v)||0);
+  if(e.inc===base.inc&&e.adv===base.adv)delete E[sid];
+  x.e=E[sid];x.changed=!!E[sid];const tr=document.querySelector('#dk-sheet tr[onclick*="\''+sid+'\'"]');if(tr)tr.classList.toggle('chg',x.changed);
+  const n=(DK.payRows||[]).filter(r=>r.changed).length,bar=dkEl('dk-savebar');if(bar){bar.hidden=!n;dkEl('dk-chn').textContent=n;}
+  if(sid===DK.sel)dkDetail(k);
+};
+window.deskUndo=function(){delete DK.edits[DK.mv];deskRender(true);};
+async function dkSaveDrafts(ids){const mv=DK.mv,E=DK.edits[mv]||{};const batch=writeBatch(db);let n=0;
+  ids.forEach(sid=>{const e=E[sid],x=(DK.payRows||[]).find(r=>r.s.id===sid);if(!e||!x||x.pay)return;
+    batch.set(doc(db,p.payDraft(sid,mv)),{staffId:sid,month:mv,incentive:e.inc||0,advRecover:e.adv,ts:Date.now()},{merge:true});n++;});
+  if(!n)return 0;await batch.commit();ids.forEach(sid=>delete E[sid]);return n;}
+window.deskSaveAll=async function(){setLoading(true,'Saving…');try{const n=await dkSaveDrafts(Object.keys(DK.edits[DK.mv]||{}));toast(n?'✓ Saved for '+n+' staff':'Nothing to save');}catch(e){toast('Error: '+e.message,true);}setLoading(false);deskRender(true);};
+function dkDetail(focusKey){
+  const host=dkEl('dk-det');if(!host)return;const x=(DK.payRows||[]).find(r=>r.s.id===DK.sel);if(!x){host.innerHTML='<div class="dk-empty">Pick someone on the left.</div>';return;}
+  const s=x.s,C=x.C,cur=DK.mv===curMonthKey(),e=x.e,adv=e?e.adv:(x.saved.adv!=null?x.saved.adv:C.advRecover),inc=e?e.inc:x.saved.inc;
+  const paidAmt=x.pay?(x.pay.netAmount!=null?x.pay.netAmount:parseInt(String(x.pay.net||'').replace(/[^0-9]/g,''))||0):0,left=Math.max(0,C.totalOutstanding-Math.min(adv||0,C.totalOutstanding));
+  const L=(a,b,k)=>`<div class="ln ${k||''}"><span>${a}</span><span>${b}</span></div>`,pd=Math.round(C.perDay);
+  host.innerHTML=`<div class="dk-ch">${dkAv(s.id)}<div><h2>${ksEsc(s.name)}</h2><span class="h">${dkInr(C.cfg.base)}/month · day ${dkInr(pd)}${C.cfg.weeklyOff>=0?' · off '+DOW_SHORT[C.cfg.weeklyOff]:''} · ${C.stdHours}h/day</span></div><span class="dk-sp"></span>${x.pay?'<span class="dk-tag good d">Paid '+ksEsc(x.pay.date||'')+' · '+ksEsc(x.pay.mode||'')+'</span>':x.changed?'<span class="dk-tag brand d">Not saved</span>':''}</div>
+  ${x.pay&&paidAmt!==C.net?`<div class="dk-sec"><div class="dk-alert"><span class="ic">!</span><div class="t">Paid ${ksEsc(x.pay.net||'')}, now calculates <b>${dkInr(C.net)}</b> (attendance or amounts changed since).</div></div></div>`:''}
+  ${x.prob?`<div class="dk-sec"><div class="dk-alert bad"><span class="ic">!</span><div class="t">${x.prob} day${x.prob>1?'s':''} with punch problems this month</div><button class="dk-btn sm red" onclick="deskGo('fix')">Fix</button></div></div>`:''}
+  ${C.joiningDate&&C.joiningDate.startsWith(DK.mv)?`<div class="dk-sec"><span class="dk-mute" style="font-size:12px">Joined ${ksEsc(C.joiningDate)} — partial month</span></div>`:''}
+  <div class="dk-sec"><h4>Attendance</h4><div class="dk-mini"><div><b style="color:var(--green)">${C.present}</b><span>Present</span></div><div><b style="color:var(--red)">${C.absent}</b><span>Absent</span></div><div><b style="color:var(--accent)">${C.late}</b><span>Late${C.lateD?'':' · no cut'}</span></div><div><b style="color:var(--purple)">${C.shortDays}</b><span>Short · ${dkHM(C.shortMins)}</span></div><div><b style="color:var(--blue)">${C.offDays}</b><span>Off / leave</span></div><div><b>${dkHM(C.otMins)}</b><span>Overtime</span></div></div></div>
+  <div class="dk-sec"><h4>Incentive & advance</h4><div class="dk-field"><label for="dk-dinc">Sales incentive (₹)</label><input id="dk-dinc" class="dk-inp" type="number" min="0" value="${inc||''}" placeholder="0" ${x.pay?'disabled':''} oninput="deskEdit('${ksEsc(s.id)}','inc',this.value)" onkeydown="if(event.key==='Enter')deskApply()"></div>
+    ${C.totalOutstanding>0?`<div class="dk-adv"><div style="display:flex;justify-content:space-between"><b>Owes</b><b class="dk-acc">${dkInr(C.totalOutstanding)}</b></div><div class="dk-debt"><i style="width:${Math.min(100,(adv||0)/C.totalOutstanding*100)}%"></i></div>
+      ${C.carryFwdAmt>0&&C.thisMonthTotal>0?`<span class="dk-mute" style="font-size:12px">Carried forward ${dkInr(C.carryFwdAmt)} · this month ${dkInr(C.thisMonthTotal)}</span>`:''}
+      <div class="dk-ir"><input id="dk-dadv" class="dk-inp" type="number" min="0" value="${adv||''}" placeholder="0" ${x.pay?'disabled':''} oninput="deskEdit('${ksEsc(s.id)}','adv',this.value)" onkeydown="if(event.key==='Enter')deskApply()" aria-label="Recover this month">${x.pay?'':`<button class="dk-btn sm" onclick="deskAdvPreset(1)">Full</button><button class="dk-btn sm" onclick="deskAdvPreset(.5)">Half</button><button class="dk-btn sm" onclick="deskAdvPreset(0)">None</button>`}</div>
+      <span class="dk-mute" style="font-size:12px">${x.pay?'Recovered '+dkInr(C.advActual):left?dkInr(left)+' carries to next month':'✓ Cleared this month'}</span></div>`:'<span class="dk-mute" style="font-size:12px">No advance owed.</span>'}
+    ${x.pay?'':`<button class="dk-btn ${x.changed?'pri':''}" style="justify-content:center" ${x.changed?'':'disabled'} onclick="deskApply()">✓ Apply to ${dkMonthLabel(DK.mv).split(' ')[0]} salary</button>`}</div>
+  <div class="dk-sec"><h4>Salary</h4><div class="dk-lines">
+    ${L('Base pay · '+dkHM(C.totalWorkedMins)+' × '+dkInr(C.perDay/C.stdHours)+'/hr',dkInr(C.basePay))}
+    ${L('Overtime · '+dkHM(C.otMins)+' × '+dkInr(C.otRatePerHour)+'/hr','+'+dkInr(C.otPay))}
+    ${C.woPay?L('Weekly off pay · '+C.weeklyOffPaidDays+' × '+dkInr(pd),'+'+dkInr(C.woPay)):''}
+    ${C.weeklyOffBonus?L('Worked on weekly off · '+dkHM(C.weeklyOffWorkedMins),'+'+dkInr(C.weeklyOffBonus)):''}
+    ${C.holidayPay?L('Holiday pay · '+C.holidayDays+' × '+dkInr(pd),'+'+dkInr(C.holidayPay)):''}
+    ${C.paidLeaveAmt?L('Paid leave · '+C.paidLeaveDays+' × '+dkInr(pd),'+'+dkInr(C.paidLeaveAmt)):''}
+    ${L('Sales incentive','+'+dkInr(C.incentive))}
+    ${C.lateD?L('Late deduction · '+C.late+' days','−'+dkInr(C.lateD)):''}
+    ${L('Gross',dkInr(C.netBeforeAdv),'tot')}${L('Advance recovered','−'+dkInr(C.advActual))}</div>
+    <div class="dk-net"><span>Net pay${x.changed?' (before your change)':''}</span><b>${dkInr(C.net)}</b></div></div>
+  <div class="dk-sec"><h4>Pay</h4>${x.pay?'':`<div class="dk-f2"><div class="dk-field"><label for="dk-pm">Paid by</label><select id="dk-pm" class="dk-inp"><option value="cash">💵 Cash</option><option value="upi">📱 UPI / GPay</option><option value="bank">🏦 Bank transfer</option></select></div><div class="dk-field"><label for="dk-pn">Note</label><input id="dk-pn" class="dk-inp" placeholder="e.g. UPI ref 1234"></div></div>`}
+    <div class="dk-row">${x.pay?`<button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Slip (PAID)</button>${paidAmt!==C.net?`<button class="dk-btn pri" onclick="deskPay('${ksEsc(s.id)}',true)">Update payment to ${dkInr(C.net)}</button>`:''}`:`<button class="dk-btn pri" ${x.changed||cur?'disabled':''} onclick="deskPay('${ksEsc(s.id)}')">✓ Mark ${dkInr(C.net)} paid</button><button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Preview slip</button>`}</div>
+    ${x.changed?'<span class="dk-acc" style="font-size:12px;font-weight:600">Apply or Save all first — the amounts above don\'t include your change yet.</span>':cur&&!x.pay?'<span class="dk-mute" style="font-size:12px">Pay after the month ends.</span>':''}</div>`;
+  if(focusKey){const el=dkEl(focusKey==='inc'?'dk-dinc':'dk-dadv');if(el&&document.activeElement&&document.activeElement.closest&&!document.activeElement.closest('#dk-det')){/* typed in the table: leave focus there */}
+    else if(el){el.focus();const v=el.value;el.value='';el.value=v;}}
+}
+window.deskAdvPreset=function(f){const x=(DK.payRows||[]).find(r=>r.s.id===DK.sel);if(!x)return;deskEdit(x.s.id,'adv',String(Math.round(x.C.totalOutstanding*f)));const tr=document.querySelector('#dk-sheet tr[onclick*="\''+x.s.id+'\'"] input[aria-label^="Advance"]');if(tr)tr.value=Math.round(x.C.totalOutstanding*f)||'';};
+window.deskApply=async function(){setLoading(true,'Saving…');try{const n=await dkSaveDrafts([DK.sel]);if(n)toast('✓ Saved for '+dkName(DK.sel));}catch(e){toast('Error: '+e.message,true);}setLoading(false);deskRender(true);};
+window.deskPay=async function(sid,update){const x=(DK.payRows||[]).find(r=>r.s.id===sid);if(!x)return;
+  const ok=await recordPayment(sid,DK.mv,{net:'₹'+x.C.net.toLocaleString('en-IN'),mode:update?(x.pay.mode||'cash'):dkEl('dk-pm').value,note:update?(x.pay.note||''):dkEl('dk-pn').value,advActual:x.C.advActual,incentive:x.C.incentive});
+  if(ok){dkAfterPay();const nx=(DK.payRows||[]).find(r=>!r.pay&&r.s.id!==sid);if(nx&&!update)DK.sel=nx.s.id;deskRender(true);}};
+function dkAfterPay(){renderPayHistory();renderAdvList();populatePayrollDropdowns();}
+window.deskPayPicked=function(){const list=[...DK.pick].map(id=>(DK.payRows||[]).find(r=>r.s.id===id)).filter(Boolean);if(!list.length)return;const tot=list.reduce((a,x)=>a+x.C.net,0);
+  dkModal(`<header><div class="dk-sp"><h3>Pay ${list.length} staff</h3><div class="dk-mute">${dkMonthLabel(DK.mv)} · ${dkInr(tot)} in total</div></div><button class="dk-xb" onclick="dkCloseModal()" aria-label="Close">×</button></header>
+  <div class="bd"><div class="dk-lines">${list.map(x=>`<div class="ln"><span>${ksEsc(x.s.name)}</span><span>${dkInr(x.C.net)}</span></div>`).join('')}<div class="ln tot"><span>Total</span><span>${dkInr(tot)}</span></div></div>
+  <div class="dk-field"><label for="dk-ppm">Paid by</label><select id="dk-ppm" class="dk-inp"><option value="cash">💵 Cash</option><option value="upi">📱 UPI / GPay</option><option value="bank">🏦 Bank transfer</option></select></div></div>
+  <footer><button class="dk-btn pri" id="dk-ppgo">✓ Mark all ${dkInr(tot)} paid</button><button class="dk-btn" onclick="dkCloseModal()">Cancel</button></footer>`);
+  dkEl('dk-ppgo').onclick=async()=>{const mode=dkEl('dk-ppm').value;dkCloseModal();let n=0;for(const x of list){if(await recordPayment(x.s.id,DK.mv,{net:'₹'+x.C.net.toLocaleString('en-IN'),mode,note:'',advActual:x.C.advActual,incentive:x.C.incentive,skipConfirm:true}))n++;}
+    DK.pick.clear();dkAfterPay();toast('✓ '+n+' salar'+(n===1?'y':'ies')+' marked paid');deskRender(true);};};
+// The slip comes from the classic Payroll tab (same layout and PAID stamp)
+window.deskSlip=async function(sid){if(!sid)return;await populatePayrollDropdowns();const sel=dkEl('pay-staff-sel');if(![...sel.options].some(o=>o.value===sid)){toast('No salary to show for '+dkName(sid),true);return;}
+  sel.value=sid;dkEl('pay-month').value=DK.mv;payCtxKey='';await renderPayroll();printSalarySlip();};
+
+// ── Advances ──
+async function dkAdv(){
+  const [ledA,advs]=await Promise.all([Promise.all(staffArr.map(s=>fbGet(p.advLedger(s.id)).catch(()=>null))),fbList(p.advances()).catch(()=>[])]);
+  const owe=staffArr.map((s,i)=>({s,bal:ledA[i]&&ledA[i].balance>0?ledA[i].balance:0})).filter(x=>x.s.active||x.bal>0).sort((a,b)=>b.bal-a.bal);
+  const cfgs=await Promise.all(owe.map(x=>getSalaryCfg(x.s.id).catch(()=>defaultSalaryCfg())));const max=Math.max(1,...owe.map(x=>x.bal));
+  const sel=DK.advSel,rows=advs.filter(a=>!sel||a.staffId===sel).sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,80);
+  dkEl('dk-page').innerHTML=`<div class="dk-ph"><div><h1>Advances</h1><p>${dkInr(owe.reduce((a,x)=>a+x.bal,0))} owed by ${owe.filter(x=>x.bal).length} staff · recovered from salary on payday</p></div><div class="dk-sp"></div><button class="dk-btn pri" onclick="openQuickAdvance()">＋ Give advance</button></div>
+  <div class="dk-two"><div class="dk-card"><div class="dk-ch"><h2>Who owes</h2><span class="h">Click a name to see their advances</span></div>
+    ${owe.map((x,i)=>`<div class="dk-li ${sel===x.s.id?'sel':''}" onclick="DK.advSel=DK.advSel==='${ksEsc(x.s.id)}'?null:'${ksEsc(x.s.id)}';deskRender(true)">${dkAv(x.s.id)}<div class="x" style="display:grid;gap:6px"><div style="display:flex;justify-content:space-between;gap:8px"><b>${ksEsc(x.s.name)}${x.s.active?'':' <span class="dk-tag off">inactive</span>'}</b><b class="${x.bal?'dk-acc':'dk-mute'}">${dkInr(x.bal)}</b></div><div class="dk-debt"><i style="width:${x.bal/max*100}%"></i></div><div style="display:flex;justify-content:space-between;align-items:center"><span class="dk-mute" style="font-size:11.5px">${cfgs[i]&&cfgs[i].base?Math.round(x.bal/cfgs[i].base*100)+'% of monthly salary':''}</span><button class="dk-btn sm" onclick="event.stopPropagation();setOpeningBalance('${ksEsc(x.s.id)}')">Set opening</button></div></div></div>`).join('')||'<div class="dk-empty">Nobody owes anything.</div>'}</div>
+  <div class="dk-card"><div class="dk-ch"><h2>${sel?ksEsc(dkName(sel))+' — advances':'Every advance'}</h2><span class="h">By the date it was asked</span>${sel?'<span class="dk-sp"></span><button class="dk-btn sm" onclick="DK.advSel=null;deskRender(true)">Show all</button>':''}</div>
+    <div class="dk-tw"><table class="dk-t"><thead><tr><th>Date</th><th>Staff</th><th class="r">Amount</th><th>Note</th></tr></thead><tbody>${rows.map(a=>`<tr><td>${ksEsc(a.date||'')}</td><td>${ksEsc(a.staffName||dkName(a.staffId))}</td><td class="r">${dkInr(a.amount)}</td><td class="dk-mute">${a.opening?'<span class="dk-tag info">Opening balance</span> ':''}${a.fromRequest?'<span class="dk-tag off">from request</span> ':''}${ksEsc(a.note||'')}</td></tr>`).join('')||'<tr><td colspan="4" class="dk-empty">No advances</td></tr>'}</tbody></table></div></div></div>`;
+}
+
+// ── Staff ──
+async function dkStaff(){
+  const L=staffArr.filter(s=>DK.stab==='active'?s.active:!s.active);
+  const [cfgs,leds]=await Promise.all([Promise.all(L.map(s=>getSalaryCfg(s.id).catch(()=>defaultSalaryCfg()))),Promise.all(L.map(s=>fbGet(p.advLedger(s.id)).catch(()=>null)))]);
+  dkEl('dk-page').innerHTML=`<div class="dk-ph"><div><h1>Staff</h1><p>Logins, salary and shift settings in one place.</p></div><div class="dk-sp"></div>
+    <div class="dk-chips"><button class="dk-chip ${DK.stab==='active'?'on':''}" onclick="DK.stab='active';deskRender(true)">Active<b>${staffArr.filter(s=>s.active).length}</b></button><button class="dk-chip ${DK.stab==='inactive'?'on':''}" onclick="DK.stab='inactive';deskRender(true)">Inactive<b>${staffArr.filter(s=>!s.active).length}</b></button></div>
+    <button class="dk-btn pri" onclick="deskAddStaff()">＋ Add staff</button></div>
+  <div class="dk-card"><div class="dk-tw"><table class="dk-t"><thead><tr><th>Name</th><th>Login</th><th>Joined</th><th class="r">Salary</th><th>Shift</th><th>Weekly off</th><th class="r">Owes</th><th></th></tr></thead><tbody>
+  ${L.map((s,i)=>{const c=cfgs[i]||{},b=leds[i]&&leds[i].balance>0?leds[i].balance:0;return `<tr class="k" onclick="deskStaffOpen('${ksEsc(s.id)}')"><td><div class="dk-who">${dkAv(s.id)}<b>${ksEsc(s.name)}</b></div></td><td class="dk-mute">@${ksEsc(s.username||'')}</td><td>${ksEsc(s.joiningDate||'—')}</td><td class="r">${c.base?dkInr(c.base):'<span class="dk-bad">not set</span>'}</td><td>${ksEsc(c.startTime||'')}–${ksEsc(c.endTime||'')}${c.standardHours?' · '+c.standardHours+'h':''}</td><td>${c.weeklyOff>=0?DOW_SHORT[c.weeklyOff]:'—'}</td><td class="r">${b?'<span class="dk-acc">'+dkInr(b)+'</span>':'—'}</td><td class="r"><button class="dk-btn sm">Open</button></td></tr>`;}).join('')||'<tr><td colspan="8" class="dk-empty">Nobody here</td></tr>'}</tbody></table></div></div>`;
+}
+window.deskStaffOpen=function(sid){const s=staffArr.find(x=>x.id===sid);if(!s)return;const q=`'${ksEsc(s.id)}'`;
+  dkModal(`<header>${dkAv(s.id)}<div class="dk-sp"><h3>${ksEsc(s.name)}</h3><div class="dk-mute">@${ksEsc(s.username||'')} · joined ${ksEsc(s.joiningDate||'—')} · ${s.active?'Active':'Inactive'}</div></div><button class="dk-xb" onclick="dkCloseModal()" aria-label="Close">×</button></header>
+  <div class="bd"><div class="dk-grid2">
+    <button class="dk-btn" onclick="dkCloseModal();openSalarySettings(${q})">₹ Salary & shift settings</button><button class="dk-btn" onclick="dkCloseModal();editPin(${q})">Change PIN</button>
+    <button class="dk-btn" onclick="dkCloseModal();editStaffName(${q})">✏️ Rename</button><button class="dk-btn" onclick="dkCloseModal();editJoiningDate(${q})">📅 Joining date</button>
+    <button class="dk-btn" onclick="dkCloseModal();deskGo('payroll',{sel:${q}})">See payroll</button><button class="dk-btn" onclick="dkCloseModal();DK.advSel=${q};deskGo('advances')">See advances</button></div></div>
+  <footer><button class="dk-btn ${s.active?'red':''}" onclick="dkCloseModal();toggleStaff(${q})">${s.active?'Disable':'Enable'}</button><button class="dk-btn red" onclick="dkCloseModal();deleteStaff(${q},'${ksEsc(s.name).replace(/'/g,'&#39;')}')">🗑️ Delete</button><span class="dk-sp"></span><button class="dk-btn" onclick="dkCloseModal()">Close</button></footer>`);};
+window.deskAddStaff=function(){dkModal(`<header><div class="dk-sp"><h3>Add staff</h3></div><button class="dk-xb" onclick="dkCloseModal()" aria-label="Close">×</button></header>
+  <div class="bd"><div class="dk-field"><label for="dk-an">Full name</label><input id="dk-an" class="dk-inp" placeholder="e.g. Ramesh Kumar"></div>
+  <div class="dk-f2"><div class="dk-field"><label for="dk-au">Username</label><input id="dk-au" class="dk-inp" autocapitalize="off" placeholder="ramesh"></div><div class="dk-field"><label for="dk-ap">4-digit PIN</label><input id="dk-ap" class="dk-inp" type="tel" maxlength="4" placeholder="1234"></div></div>
+  <div class="dk-field"><label for="dk-aj">Joining date</label><input id="dk-aj" class="dk-inp" type="date" value="${todayStr()}"></div><span class="dk-mute" style="font-size:12px">Set salary and shift after adding (Open → Salary & shift settings).</span></div>
+  <footer><button class="dk-btn pri" id="dk-ago">＋ Add staff</button><button class="dk-btn" onclick="dkCloseModal()">Cancel</button></footer>`);
+  dkEl('dk-ago').onclick=async()=>{dkEl('ns-name').value=dkEl('dk-an').value;dkEl('ns-user').value=dkEl('dk-au').value;dkEl('ns-pin').value=dkEl('dk-ap').value;dkEl('ns-joining').value=dkEl('dk-aj').value;
+    const before=staffArr.length;await addStaff();if(staffArr.length>before){dkCloseModal();deskRender(true);}};};
+
+// ── modal + command palette ──
+function dkModal(h){const m=dkEl('dk-modal');m.innerHTML=h;m.style.width='';dkEl('dk-scrim').classList.add('on');const f=m.querySelector('input,select,button:not(.dk-xb)');if(f)f.focus();}
+function dkCloseModal(){const s=dkEl('dk-scrim');if(s)s.classList.remove('on');}
+window.dkCloseModal=dkCloseModal;
+window.deskPalette=function(){if(!DK.on)return;const act=staffArr.filter(s=>s.active);
+  const items=[...Object.entries(DK_TITLES).map(([k,l])=>({t:'Go to '+l,k:'page',run:()=>deskGo(k)})),
+    ...act.flatMap(s=>[{t:s.name+' — payroll',k:'staff',sid:s.id,run:()=>deskGo('payroll',{sel:s.id})},{t:s.name+' — today\'s punch',k:'staff',sid:s.id,run:()=>deskPunchFor(s.id)},{t:s.name+' — settings',k:'staff',sid:s.id,run:()=>deskStaffOpen(s.id)}]),
+    {t:'Give an advance',k:'action',run:()=>openQuickAdvance()},{t:'Use classic view',k:'action',run:()=>deskClassic(true)}];
+  dkModal('<div class="dk-pal"><input id="dk-pq" placeholder="Type a name or a page…" aria-label="Search"><div class="res" id="dk-pr"></div></div>');dkEl('dk-modal').style.width='min(560px,100%)';
+  let sel=0,cur=items;const draw=()=>{const q=dkEl('dk-pq').value.toLowerCase().split(/\s+/).filter(Boolean);cur=items.filter(x=>{const t=x.t.toLowerCase();return q.every(w=>t.includes(w));}).slice(0,9);sel=Math.max(0,Math.min(sel,cur.length-1));
+    dkEl('dk-pr').innerHTML=cur.map((x,i)=>`<div class="it ${i===sel?'on':''}" data-i="${i}">${x.sid?dkAv(x.sid):'<span class="dk-av" style="background:var(--s3);color:var(--muted)">→</span>'}<span>${ksEsc(x.t)}</span><span class="k">${x.k}</span></div>`).join('')||'<div class="dk-empty">No match</div>';
+    dkEl('dk-pr').querySelectorAll('[data-i]').forEach(e=>e.onclick=()=>{dkCloseModal();cur[+e.dataset.i].run();});};
+  dkEl('dk-pq').oninput=()=>{sel=0;draw();};dkEl('dk-pq').onkeydown=e=>{if(e.key==='ArrowDown'){sel=Math.min(sel+1,cur.length-1);draw();e.preventDefault();}else if(e.key==='ArrowUp'){sel=Math.max(sel-1,0);draw();e.preventDefault();}else if(e.key==='Enter'&&cur[sel]){dkCloseModal();cur[sel].run();}};draw();};
+document.addEventListener('keydown',e=>{if(!DK.on)return;
+  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();deskPalette();}
+  else if(e.key==='Escape')dkCloseModal();
+  else if(e.key==='/'&&!/INPUT|SELECT|TEXTAREA/.test((document.activeElement||{}).tagName||'')&&!document.querySelector('.sheet-overlay.open')){e.preventDefault();deskPalette();}});
+document.addEventListener('click',e=>{if(e.target&&e.target.id==='dk-scrim')dkCloseModal();});
+window.deskSync=deskSync;
+window.deskRender=deskRender;
+window.DK=DK;
+deskSync();
+
 </script>
 
 </head>
@@ -4490,6 +4917,236 @@ textarea.form-input{resize:none;}
 .kiosk-dot{width:16px;height:16px;border-radius:50%;border:2px solid var(--border);background:transparent;transition:background .15s,border-color .15s;}
 .kiosk-dot.filled{background:var(--accent);border-color:var(--accent);}
 .kiosk-dot.error{background:var(--red);border-color:var(--red);}
+
+/* ══ Computer layout (desk) — owner panel at 1100px+; uses the app's theme tokens ══ */
+#desk[hidden]{display:none}
+#screen-owner.desk-on{max-width:none!important;box-shadow:none!important}
+#screen-owner.desk-on #owner-panel-wrap{display:none!important}
+body.dk-body{display:block!important}
+body.dk-body .sheet-overlay{align-items:center}
+body.dk-body .sheet{border-radius:20px}
+#desk{--dkw:color-mix(in srgb,var(--accent) 14%,transparent);display:grid;grid-template-columns:216px minmax(0,1fr) 300px;min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--fb);font-size:14px}
+#desk.dk-noctx{grid-template-columns:216px minmax(0,1fr) 0}
+#desk.dk-noctx .dk-ctx{display:none}
+#desk button{font-family:inherit;color:inherit;cursor:pointer}
+#desk .dk-rail{position:sticky;top:0;height:100vh;background:var(--s1);border-right:1px solid var(--border);display:flex;flex-direction:column;gap:12px;padding:16px 12px;overflow:auto}
+.dk-logo{display:flex;align-items:center;gap:10px;padding:0 6px}
+.dk-mark{width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;display:grid;place-items:center;font-family:var(--fh);font-weight:800;font-size:13px}
+.dk-logo b{font-family:var(--fh);font-size:15px;display:block;line-height:1.15}
+.dk-logo small{color:var(--muted);font-size:11px}
+.dk-shop{border:1px solid var(--border);border-radius:10px;padding:9px 11px;background:var(--s2);font-size:12px;display:grid;gap:2px;color:var(--muted)}
+.dk-shop b{color:var(--text);font-size:13px}
+.dk-st{display:flex;justify-content:space-between;font-size:10px;font-weight:700;letter-spacing:.08em}
+.dk-st span:first-child{color:var(--green)}
+.dk-navg{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:8px 8px 2px;opacity:.8}
+.dk-nav{display:flex;flex-direction:column;gap:1px}
+.dk-nav button{display:flex;align-items:center;gap:10px;border:0;background:none;padding:8px 9px;border-radius:8px;font-weight:600;text-align:left;font-size:13.5px;color:var(--text)}
+.dk-nav button svg{width:17px;height:17px;flex-shrink:0;color:var(--muted)}
+.dk-nav button:hover{background:var(--s2)}
+.dk-nav button.on{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
+.dk-nav button.on svg{color:#fff}
+.dk-nav .n{margin-left:auto;font-size:10.5px;font-weight:700;border-radius:20px;padding:1px 7px;background:color-mix(in srgb,var(--red) 18%,transparent);color:var(--red)}
+.dk-nav button.on .n{background:rgba(255,255,255,.25);color:#fff}
+.dk-bottom{margin-top:auto;display:grid;gap:8px}
+.dk-qp{border:0;border-radius:10px;padding:11px;font-weight:700;color:#fff!important;background:linear-gradient(135deg,var(--accent),var(--accent2))}
+.dk-link{border:0;background:none;color:var(--muted)!important;font-size:12px;text-decoration:underline;padding:2px}
+.dk-work{min-width:0;display:flex;flex-direction:column}
+.dk-cmd{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:8px;padding:11px 22px;background:var(--topbar-bg);backdrop-filter:blur(14px);border-bottom:1px solid var(--border)}
+.dk-crumb{font-size:13px;color:var(--muted);white-space:nowrap}
+.dk-crumb b{color:var(--text)}
+.dk-sp{flex:1}
+.dk-kbtn{display:flex;align-items:center;gap:10px;border:1px solid var(--border);background:var(--s1);border-radius:9px;height:36px;padding:0 10px 0 12px;color:var(--muted)!important;font-size:13px;min-width:220px}
+.dk-kbtn kbd{margin-left:auto;font-size:11px;border:1px solid var(--border);border-radius:5px;padding:1px 6px;background:var(--s2);font-family:inherit}
+.dk-clock{font-size:12.5px;font-weight:600;white-space:nowrap;border:1px solid var(--border);background:var(--s1);border-radius:9px;height:36px;display:flex;align-items:center;padding:0 12px}
+.dk-tb{border:1px solid var(--border);background:var(--s1);border-radius:9px;height:36px;padding:0 12px;font-weight:600;font-size:13px;white-space:nowrap}
+.dk-tb:hover{border-color:var(--muted)}
+.dk-tb.dk-ic{width:36px;padding:0}
+.dk-page{padding:20px 22px 70px;display:grid;gap:16px;max-width:1500px;width:100%;align-content:start}
+.dk-ph{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.dk-ph h1{margin:0;font-family:var(--fh);font-size:23px;letter-spacing:-.01em}
+.dk-ph p{margin:3px 0 0;color:var(--muted);font-size:13px}
+.dk-msw{display:flex;align-items:center;border:1px solid var(--border);background:var(--s1);border-radius:9px;padding:2px}
+.dk-msw button{border:0;background:none;width:30px;height:30px;border-radius:7px;font-size:16px}
+.dk-msw button:hover:not(:disabled){background:var(--s2)}
+.dk-msw button:disabled{opacity:.3;cursor:not-allowed}
+.dk-msw span{min-width:128px;text-align:center;font-weight:700;font-size:13px}
+.dk-card{background:var(--s1);border:1px solid var(--border);border-radius:12px;min-width:0}
+.dk-ch{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.dk-ch h2{margin:0;font-size:14px}
+.dk-ch .h{color:var(--muted);font-size:12px}
+.dk-cb{padding:14px 16px}
+.dk-btn{border:1px solid var(--border);background:var(--s1);border-radius:8px;padding:7px 13px;font-weight:600;font-size:13px;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.dk-btn:hover:not(:disabled){border-color:var(--muted)}
+.dk-btn.pri{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff!important;border-color:transparent}
+.dk-btn.red{color:var(--red)!important;border-color:color-mix(in srgb,var(--red) 40%,var(--border))}
+.dk-btn.ghost{background:none;color:inherit;border-color:rgba(255,255,255,.3)}
+.dk-btn.sm{padding:4px 9px;font-size:12px;border-radius:7px}
+.dk-btn:disabled{opacity:.4;cursor:not-allowed}
+.dk-row{display:flex;gap:8px;flex-wrap:wrap}
+.dk-tag{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;border-radius:20px;padding:2px 8px;white-space:nowrap;vertical-align:middle}
+.dk-tag.d::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.dk-tag.good{background:color-mix(in srgb,var(--green) 16%,transparent);color:var(--green)}
+.dk-tag.bad{background:color-mix(in srgb,var(--red) 15%,transparent);color:var(--red)}
+.dk-tag.info{background:color-mix(in srgb,var(--blue) 15%,transparent);color:var(--blue)}
+.dk-tag.warn{background:var(--dkw);color:var(--accent)}
+.dk-tag.brand{background:var(--dkw);color:var(--accent2)}
+.dk-tag.off{background:var(--s3);color:var(--muted)}
+.dk-av{width:30px;height:30px;border-radius:50%;display:inline-grid;place-items:center;color:#fff;font-weight:700;font-size:11.5px;flex-shrink:0}
+.dk-who{display:flex;align-items:center;gap:10px;min-width:0}
+.dk-who b{display:block;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dk-who small{display:block;color:var(--muted);font-size:11.5px}
+.dk-mute{color:var(--muted)} .dk-acc{color:var(--accent);font-weight:700} .dk-bad{color:var(--red)}
+.dk-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.dk-chip{border:1px solid var(--border);background:var(--s1);border-radius:20px;padding:5px 11px;font-size:12px;font-weight:600}
+.dk-chip b{margin-left:4px;color:var(--muted)}
+.dk-chip.on{background:var(--text);color:var(--bg)!important;border-color:var(--text)}
+.dk-chip.on b{color:var(--accent)}
+.dk-field{display:grid;gap:5px}
+.dk-field label{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.dk-inp{border:1px solid var(--border);background:var(--s2);border-radius:8px;padding:8px 10px;width:100%;color:var(--text);font:inherit}
+.dk-f2,.dk-grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.dk-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.dk-stat{background:var(--s1);border:1px solid var(--border);border-radius:12px;padding:13px 15px;display:grid;gap:7px}
+.dk-stat .l{display:flex;justify-content:space-between;align-items:center;font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.dk-stat .v{font-family:var(--fh);font-size:24px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}
+.dk-stat .v small{font-family:var(--fb);font-size:12px;font-weight:500;color:var(--muted);margin-left:4px}
+.dk-stat .f{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);gap:8px}
+.dk-stat .f b{color:var(--text)}
+.dk-bar{height:6px;background:var(--s3);border-radius:6px;display:flex;overflow:hidden}
+.dk-bar i{display:block;height:100%}
+.dk-alert{display:flex;align-items:center;gap:12px;border-radius:12px;padding:10px 14px;border:1px solid color-mix(in srgb,var(--accent) 35%,var(--border));background:var(--dkw);font-size:13px;flex-wrap:wrap}
+.dk-alert.bad{border-color:color-mix(in srgb,var(--red) 35%,var(--border));background:color-mix(in srgb,var(--red) 10%,transparent)}
+.dk-alert .ic{font-weight:800;color:var(--accent);font-size:16px}
+.dk-alert.bad .ic{color:var(--red)}
+.dk-alert .t{flex:1;min-width:200px}
+.dk-tl{display:grid;grid-template-columns:220px minmax(0,1fr) 90px;align-items:center}
+.dk-tl .hd{font-size:10.5px;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border);position:relative;height:30px}
+.dk-tl .hd span{position:absolute;transform:translateX(-50%);top:9px}
+.dk-tl .row{display:contents}
+.dk-tl .row>div{border-bottom:1px solid var(--border);height:58px;display:flex;align-items:center}
+.dk-tl .row:hover>div{background:var(--s2)}
+.dk-tl .nm{padding:0 14px;cursor:pointer}
+.dk-tl .tot{justify-content:flex-end;padding-right:14px;font-weight:700;font-variant-numeric:tabular-nums}
+.trk{position:relative;width:100%;height:100%}
+.trk .sh{position:absolute;top:14px;bottom:14px;background:var(--s3);border-radius:6px}
+.trk .g{position:absolute;top:0;bottom:0;border-left:1px dashed var(--border)}
+.trk .sg{position:absolute;top:19px;bottom:19px;border-radius:5px;background:var(--green)}
+.trk .sg.open{background:repeating-linear-gradient(45deg,var(--green) 0 6px,color-mix(in srgb,var(--green) 50%,transparent) 6px 12px)}
+.trk .now{position:absolute;top:0;bottom:0;border-left:2px solid var(--accent2)}
+.trk .now::before{content:"now";position:absolute;top:2px;left:4px;font-size:9.5px;font-weight:700;color:var(--accent2)}
+.trk .lt{position:absolute;top:10px;width:8px;height:8px;border-radius:50%;background:var(--accent);transform:translateX(-50%)}
+.trk .lb{position:absolute;top:40px;font-size:10px;color:var(--muted);white-space:nowrap;transform:translateX(-50%)}
+.dk-reg-wrap{overflow:auto;max-height:calc(100vh - 230px)}
+.dk-reg{border-collapse:separate;border-spacing:0;width:max-content;min-width:100%}
+.dk-reg th,.dk-reg td{padding:0;border-bottom:1px solid var(--border)}
+.dk-reg thead th{position:sticky;top:0;z-index:2;background:var(--s2);font-size:10px;color:var(--muted);font-weight:600;text-align:center;padding:6px 0;min-width:28px}
+.dk-reg thead th b{font-size:11.5px;color:var(--text)}
+.dk-reg thead th.sun{color:var(--accent)}
+.dk-reg .nm{position:sticky;left:0;z-index:3;background:var(--s1);min-width:180px;padding:7px 12px;text-align:left;border-right:1px solid var(--border)}
+.dk-reg thead .nm{z-index:4;background:var(--s2)}
+.dk-reg .s{min-width:52px;text-align:right;padding:0 10px;font-weight:600}
+.dk-reg .s.g{color:var(--green)} .dk-reg .s.b{color:var(--red)} .dk-reg .s.w{color:var(--accent)}
+.dc{width:24px;height:26px;margin:4px 2px;border-radius:6px;border:0;font-size:9.5px;font-weight:700;display:grid;place-items:center;position:relative;background:var(--s3);color:var(--muted)}
+.dc.P{background:color-mix(in srgb,var(--green) 18%,transparent);color:var(--green)}
+.dc.A{background:color-mix(in srgb,var(--red) 16%,transparent);color:var(--red)}
+.dc.H{background:color-mix(in srgb,var(--blue) 18%,transparent);color:var(--blue)}
+.dc.L{background:color-mix(in srgb,var(--accent) 22%,transparent);color:var(--accent)}
+.dc.S{background:color-mix(in srgb,var(--purple) 18%,transparent);color:var(--purple)}
+.dc.WW{background:color-mix(in srgb,var(--green) 18%,transparent);color:var(--green);box-shadow:inset 0 0 0 2px var(--blue)}
+.dc.F{background:none}
+.dc i{position:absolute;top:2px;right:2px;width:5px;height:5px;border-radius:50%;background:var(--accent)}
+.dc:hover:not(:disabled){outline:2px solid var(--accent);outline-offset:1px}
+.dk-key{display:flex;gap:12px;flex-wrap:wrap;font-size:11.5px;color:var(--muted)}
+.dk-key span{display:inline-flex;gap:5px;align-items:center}
+.dk-key em{width:12px;height:12px;border-radius:3px;display:inline-block}
+.dk-tw{overflow-x:auto}
+.dk-t{border-collapse:collapse;width:100%}
+.dk-t th{font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);font-weight:700;text-align:left;padding:9px 12px;background:var(--s2);border-bottom:1px solid var(--border);white-space:nowrap}
+.dk-t td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:middle;font-variant-numeric:tabular-nums}
+.dk-t tr:last-child td{border-bottom:0}
+.dk-t .r{text-align:right}
+.dk-t tbody tr.k{cursor:pointer}
+.dk-t tbody tr.k:hover td{background:var(--s2)}
+.dk-t tbody tr.sel td{background:var(--dkw)}
+.dk-t tbody tr.chg td{background:color-mix(in srgb,var(--accent) 9%,transparent)}
+.dk-t tfoot td{font-weight:700;background:var(--s2);border-top:1px solid var(--border)}
+.dk-ci{width:78px;text-align:right;border:1px solid var(--border);background:var(--s2);border-radius:7px;padding:5px 8px;color:var(--text);font:inherit;font-variant-numeric:tabular-nums}
+.dk-ci.chg{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 25%,transparent)}
+.dk-ci:disabled{border-color:transparent;background:none}
+.dk-cbx{width:16px;height:16px;accent-color:var(--accent2)}
+.dk-steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--s1);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.dk-step{display:flex;gap:10px;align-items:center;padding:12px 14px;border:0;border-right:1px solid var(--border);background:none;text-align:left}
+.dk-step:last-child{border-right:0}
+.dk-step .dot{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:12px;background:var(--s3);color:var(--muted);flex-shrink:0}
+.dk-step.done .dot{background:var(--green);color:#fff}
+.dk-step.now .dot{background:var(--accent2);color:#fff}
+.dk-step b{display:block;font-size:13px}
+.dk-step small{color:var(--muted);font-size:11.5px}
+.dk-payg{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(340px,1fr);gap:16px;align-items:start}
+.dk-det{position:sticky;top:70px;max-height:calc(100vh - 86px);overflow:auto}
+.dk-sec{padding:12px 16px;border-top:1px solid var(--border);display:grid;gap:10px}
+.dk-sec h4{margin:0;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.dk-mini{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
+.dk-mini div{background:var(--s2);border-radius:8px;padding:8px 10px}
+.dk-mini b{display:block;font-family:var(--fh);font-size:19px;line-height:1.15}
+.dk-mini span{font-size:11px;color:var(--muted);font-weight:600}
+.dk-lines .ln{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;font-variant-numeric:tabular-nums}
+.dk-lines .ln span:first-child{color:var(--muted)}
+.dk-lines .ln.tot{font-weight:700}
+.dk-lines .ln.tot span:first-child{color:var(--text)}
+.dk-net{display:flex;justify-content:space-between;align-items:center;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border-radius:10px;padding:12px 14px;margin-top:6px}
+.dk-net b{font-family:var(--fh);font-size:22px}
+.dk-adv{background:var(--dkw);border:1px solid color-mix(in srgb,var(--accent) 30%,var(--border));border-radius:10px;padding:11px;display:grid;gap:8px}
+.dk-ir{display:flex;gap:6px}
+.dk-ir .dk-inp{flex:1}
+.dk-debt{height:8px;border-radius:8px;background:var(--s3);overflow:hidden}
+.dk-debt i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2))}
+.dk-selbar{position:sticky;bottom:14px;z-index:15;display:flex;align-items:center;gap:10px;background:var(--text);color:var(--bg);border-radius:12px;padding:9px 10px 9px 16px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+.dk-selbar[hidden]{display:none}
+.dk-selbar .dk-btn.ghost{color:var(--bg)!important;border-color:color-mix(in srgb,var(--bg) 35%,transparent)}
+.dk-split{display:grid;grid-template-columns:minmax(260px,360px) minmax(0,1fr);gap:16px;align-items:start}
+.dk-two{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}
+.dk-li{display:flex;gap:11px;padding:11px 14px;border-bottom:1px solid var(--border);cursor:pointer;align-items:flex-start}
+.dk-li:last-child{border-bottom:0}
+.dk-li:hover{background:var(--s2)} .dk-li.sel{background:var(--dkw)}
+.dk-li .x{flex:1;min-width:0}
+.dk-kv{display:grid;grid-template-columns:150px minmax(0,1fr);gap:9px 14px;margin:0;font-size:13px}
+.dk-kv dt{color:var(--muted)} .dk-kv dd{margin:0;font-weight:600}
+.dk-empty{padding:34px;text-align:center;color:var(--muted)}
+.dk-ctx{position:sticky;top:0;height:100vh;overflow:auto;border-left:1px solid var(--border);background:var(--s1)}
+.dk-blk{padding:14px 16px;border-bottom:1px solid var(--border);display:grid;gap:10px}
+.dk-blk h3{margin:0;font-size:13px;display:flex;align-items:center;gap:8px}
+.dk-live{font-size:10px;font-weight:700;color:var(--green);letter-spacing:.08em}
+.dk-ap{border:1px solid var(--border);border-radius:9px;padding:9px 10px;display:grid;gap:7px;font-size:12.5px}
+.dk-ev{display:flex;gap:10px;padding:7px 0;font-size:12.5px;border-bottom:1px dashed var(--border)}
+.dk-ev:last-child{border-bottom:0}
+.dk-ev .ico{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:11px;flex-shrink:0;font-weight:700}
+.dk-ev .in{background:color-mix(in srgb,var(--green) 16%,transparent);color:var(--green)}
+.dk-ev .out{background:color-mix(in srgb,var(--blue) 16%,transparent);color:var(--blue)}
+.dk-ev small{display:block;color:var(--muted);font-size:11px}
+#dk-scrim{position:fixed;inset:0;background:rgba(5,5,12,.5);z-index:500;display:none;align-items:flex-start;justify-content:center;padding:9vh 16px 16px}
+#dk-scrim.on{display:flex}
+#dk-modal{background:var(--s1);border:1px solid var(--border);border-radius:14px;width:min(520px,100%);max-height:82vh;overflow:auto;color:var(--text);font-family:var(--fb);box-shadow:0 20px 50px rgba(0,0,0,.35)}
+#dk-modal header{display:flex;gap:10px;align-items:flex-start;padding:16px 18px;border-bottom:1px solid var(--border)}
+#dk-modal header h3{margin:0;font-family:var(--fh);font-size:17px}
+#dk-modal .bd{padding:16px 18px;display:grid;gap:14px}
+#dk-modal footer{display:flex;gap:8px;padding:12px 18px;border-top:1px solid var(--border);flex-wrap:wrap;align-items:center}
+.dk-xb{border:0;background:var(--s2);width:30px;height:30px;border-radius:8px;font-size:17px;color:var(--text);cursor:pointer}
+.dk-pal input{border:0;border-bottom:1px solid var(--border);width:100%;padding:16px 18px;font-size:16px;background:none;outline:0;color:var(--text);font-family:inherit}
+.dk-pal .res{max-height:50vh;overflow:auto;padding:6px}
+.dk-pal .it{display:flex;gap:10px;align-items:center;padding:9px 12px;border-radius:8px;cursor:pointer;font-size:13.5px}
+.dk-pal .it.on,.dk-pal .it:hover{background:var(--s2)}
+.dk-pal .it .k{margin-left:auto;color:var(--muted);font-size:11.5px}
+/* existing pages shown inside the desk */
+#desk .dk-hosted{display:block!important;padding:0!important;animation:none}
+#desk #owner-settings.dk-hosted{display:grid!important;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 18px;align-items:start}
+#desk #owner-settings.dk-hosted>p{display:none}
+#desk #owner-fix.dk-hosted #fix-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(460px,1fr));gap:0 14px;align-items:start}
+#dk-back{position:fixed;right:18px;bottom:18px;z-index:400;border:0;border-radius:24px;padding:10px 16px;font-weight:700;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));box-shadow:0 8px 24px rgba(0,0,0,.25);cursor:pointer;font-family:var(--fb)}
+#dk-back[hidden]{display:none}
+@media (max-width:1380px){#desk{grid-template-columns:216px minmax(0,1fr) 0}#desk .dk-ctx{display:none}#desk.dk-ctxwide{grid-template-columns:216px minmax(0,1fr) 300px}#desk.dk-ctxwide .dk-ctx{display:block}.dk-kbtn span{display:none}.dk-kbtn{min-width:0}}
+@media (max-width:1250px){.dk-payg{grid-template-columns:minmax(0,1fr)}.dk-det{position:static;max-height:none}.dk-clock{display:none}}
+
 </style>
 <!-- ══════════════════════════════════
      LANDING
@@ -4499,7 +5156,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.23.4</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.24.0</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -5080,7 +5737,10 @@ textarea.form-input{resize:none;}
       </details>
     </div><!-- /page owner-settings -->
   </div><!-- /owner-panel-wrap -->
+  <div id="desk" hidden></div>
 </div><!-- /screen-owner -->
+<div id="dk-scrim"><div id="dk-modal" role="dialog" aria-modal="true"></div></div>
+<button id="dk-back" hidden onclick="deskClassic(false)">🖥 Computer layout</button>
 
 <!-- ══════════════════════════════════
      KIOSK LOGIN
@@ -5505,7 +6165,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.23.4</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.24.0</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -5513,11 +6173,25 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.24.0 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.24.0</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>New computer layout for the owner panel (laptop / desktop) — the phone layout is unchanged</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Today: shift timeline, late and open-session alerts, live activity, quick punch, approvals</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Attendance register: everyone × every day on one screen — click a day to fix it</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll salary sheet: incentives and advances in the rows, Save all, step tracker, pay several at once</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Search anything with ⌘K / Ctrl+K · “Use classic view” keeps the old layout on a computer</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.23.4 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.23.4</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.23.4</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll: “🎯 Sales Incentive — all staff” list — enter everyone's incentive for the month and save in one go (paid staff are locked)</span></div>
