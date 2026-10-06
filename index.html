@@ -47,7 +47,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.25.0';
+const APP_VERSION = 'v1.25.1';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -592,10 +592,12 @@ const SELFIE_NEEDED_MSG='📷 Selfie is required. Allow camera access for this s
 window.captureSelfie=function(){
   const vid=document.getElementById('selfie-video'),c=document.getElementById('selfie-canvas');
   if(!cameraReady(vid))return toast(vid&&vid.srcObject?'Camera is starting — wait a second and tap again':SELFIE_NEEDED_MSG,true);
-  c.width=vid.videoWidth;c.height=vid.videoHeight;
-  const ctx=c.getContext('2d');ctx.save();ctx.scale(-1,1);ctx.drawImage(vid,-c.width,0);ctx.restore();
+  // Keep photos small (max 360px side): they are stored inside the attendance record
+  const sc=Math.min(1,360/Math.max(vid.videoWidth,vid.videoHeight));
+  c.width=Math.round(vid.videoWidth*sc);c.height=Math.round(vid.videoHeight*sc);
+  const ctx=c.getContext('2d');ctx.save();ctx.scale(-1,1);ctx.drawImage(vid,-c.width,0,c.width,c.height);ctx.restore();
   if(frameTooDark(c))return toast('Photo is too dark — face the camera in light and tap again',true);
-  capturedSelfie=c.toDataURL('image/jpeg',0.5);
+  capturedSelfie=c.toDataURL('image/jpeg',0.6);
   document.getElementById('selfie-preview').src=capturedSelfie;
   document.getElementById('selfie-preview').style.display='block';
   document.getElementById('selfie-video').style.display='none';
@@ -1174,6 +1176,7 @@ window.fixRemoveSession=function(staffId,date,idx){
 };
 
 function refreshFixIfOpen(){
+  deskPing(true);
   var pg=document.getElementById('owner-fix');
   if(pg&&pg.classList.contains('active'))renderFixList();
 }
@@ -1182,7 +1185,8 @@ function refreshFixIfOpen(){
 //  OWNER TODAY
 // ─────────────────────────────────────────────
 async function renderOwnerToday(){
-  deskPing();
+  deskPing(true);
+  if(typeof DK!=='undefined'&&DK&&DK.on)return; // computer layout shows its own Today
   const today=todayStr();
   setLoading(true,'Loading today…');
   try{
@@ -1537,7 +1541,8 @@ window.inboxMonthToggle=function(el){
 function dateWithDay(ds){var d=new Date(ds+'T00:00:00');return isNaN(d)?ds:ds+' '+['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()];}
 function localDateStr(ts){var d=new Date(ts);return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());}
 async function renderInbox(){
-  deskPing();
+  deskPing(true);
+  if(typeof DK!=='undefined'&&DK&&DK.on)return;
   setLoading(true,'Loading requests…');
   try{
     const reqs=await fbList(p.requests(),orderBy('ts','desc'));
@@ -2050,6 +2055,38 @@ window.applyPayInputs=async function(){
   const paidNow=document.getElementById('pay-mark-btn');
   toast(paidNow&&paidNow.textContent.indexOf('Update')>=0?'Applied · press Update Payment to save it':'✓ Saved for this month');
 };
+
+// ── One-time clean-up: re-save old full-size selfies at the small size (past days only) ──
+function shrinkDataUrl(src){return new Promise(function(res){
+  if(typeof src!=='string'||src.indexOf('data:image')!==0||src.length<30000)return res(null);
+  var im=new Image();im.onload=function(){try{var sc=Math.min(1,320/Math.max(im.width,im.height));var c=document.createElement('canvas');
+    c.width=Math.round(im.width*sc);c.height=Math.round(im.height*sc);c.getContext('2d').drawImage(im,0,0,c.width,c.height);
+    var out=c.toDataURL('image/jpeg',0.6);res(out.length<src.length?out:null);}catch(e){res(null);}};im.onerror=function(){res(null);};im.src=src;});}
+window.shrinkStoredSelfies=async function(){
+  if(!confirm('Shrink the stored selfie photos of all past days?\n\nPhotos stay clear enough to recognise faces, but this cannot be undone.'))return;
+  var btn=document.getElementById('shrink-btn'),st=document.getElementById('shrink-status');btn.disabled=true;
+  var today=todayStr(),d=new Date(),empty=0,docs=0,photos=0,saved=0;
+  try{
+    for(var i=0;i<36&&empty<3;i++){
+      var mv=d.getFullYear()+'-'+pad(d.getMonth()+1);d.setMonth(d.getMonth()-1);
+      st.textContent='Checking '+mv+'… ('+photos+' photos shrunk so far)';
+      var recs=await fbList(p.recs(),where('date','>=',mv+'-01'),where('date','<=',mv+'-31')).catch(function(){return [];});
+      if(!recs.length){empty++;continue;}empty=0;
+      for(var j=0;j<recs.length;j++){var r=recs[j];if(!r.date||r.date>=today)continue;
+        var upd={},changed=false;
+        for(var k of ['inSelfie','outSelfie']){var o=await shrinkDataUrl(r[k]);if(o){saved+=r[k].length-o.length;upd[k]=o;changed=true;photos++;}}
+        if(Array.isArray(r.sessions)){var ss=r.sessions.map(function(x){return Object.assign({},x);});
+          for(var q=0;q<ss.length;q++)for(var k2 of ['inSelfie','outSelfie']){var o2=await shrinkDataUrl(ss[q][k2]);if(o2){saved+=ss[q][k2].length-o2.length;ss[q][k2]=o2;changed=true;photos++;}}
+          if(changed)upd.sessions=ss;}
+        if(changed){await updateDoc(doc(db,p.rec(r.staffId,r.date)),upd);docs++;}
+      }
+    }
+    st.textContent='✓ Done — '+photos+' photos in '+docs+' days shrunk, about '+(saved/1048576).toFixed(1)+' MB lighter.';
+    toast('✓ Photos shrunk');deskPing(true);
+  }catch(e){st.textContent='Stopped: '+e.message+' — press the button again to continue.';}
+  btn.disabled=false;
+};
+
 // ── Salary for one staff + month ──
 // The phone Payroll tab and the computer salary sheet both use this, so the numbers can never differ.
 // opts: {incentive, advRecover (null = default), payRec (optional, already fetched), pre: {recs, marks, ledgers, advs} preloaded for many staff}
@@ -4277,7 +4314,8 @@ deskMQ.addEventListener('change',deskSync);
 new MutationObserver(deskSync).observe(document.getElementById('owner-panel-wrap'),{attributes:true,attributeFilter:['style']});
 let dkPingT=null;
 // Called by the classic render functions after any change, so the desk refreshes too
-function deskPing(){if(typeof DK==='undefined'||!DK||!DK.on)return;clearTimeout(dkPingT);dkPingT=setTimeout(()=>{deskRender(true);},350);}
+// changed=true when punches / leave may have changed (clears the cached month records)
+function deskPing(changed){if(typeof DK==='undefined'||!DK||!DK.on)return;if(changed)dkClearCache();clearTimeout(dkPingT);dkPingT=setTimeout(()=>{deskRender(true);},350);}
 
 // Existing pages that the desk shows as they are (moved in, and back out on leave)
 function dkHost(id){const el=dkEl(id);if(!el)return null;if(!DK.home[id])DK.home[id]={parent:el.parentNode,next:el.nextSibling};el.classList.add('active','dk-hosted');return el;}
@@ -4332,6 +4370,13 @@ async function deskRender(quiet){
   }catch(e){dkEl('dk-page').innerHTML='<div class="dk-empty">Could not load: '+ksEsc(e.message)+'</div>';}
   dkRendering=false;
 }
+// Month attendance cached in memory (records carry selfie photos, so they are heavy).
+// Cleared whenever something is saved (deskPing) — past months keep 10 min, this month 1 min.
+function dkMonthRecs(mv){const c=DK.recCache||(DK.recCache={}),hit=c[mv],ttl=mv===curMonthKey()?60000:600000;
+  if(hit&&Date.now()-hit.at<ttl)return hit.p;
+  const pr=fbList(p.recs(),where('date','>=',mv+'-01'),where('date','<=',mv+'-31')).catch(()=>[]);c[mv]={at:Date.now(),p:pr};return pr;}
+function dkMarks(){if(DK.marksC&&Date.now()-DK.marksC.at<120000)return DK.marksC.p;const pr=fbList(p.days()).catch(()=>[]);DK.marksC={at:Date.now(),p:pr};return pr;}
+function dkClearCache(){DK.recCache={};DK.marksC=null;DK.data.fixAt=0;}
 // Data every page needs: today's punches, pending requests, last month's punch problems (cached a minute)
 async function dkLoadCommon(){
   const today=todayStr();
@@ -4339,7 +4384,7 @@ async function dkLoadCommon(){
   DK.data.today=recs;DK.data.reqs=reqs;DK.data.pending=reqs.filter(r=>r.status==='pending');
   const pm=prevMonthKey();
   if(!DK.data.fixAt||Date.now()-DK.data.fixAt>60000){
-    const mrecs=await fbList(p.recs(),where('date','>=',pm+'-01'),where('date','<=',pm+'-31')).catch(()=>[]);
+    const mrecs=await dkMonthRecs(pm);
     DK.data.fixCount=mrecs.filter(r=>detectPunchProblems(r,today).length).length;DK.data.fixAt=Date.now();
   }
 }
@@ -4402,7 +4447,7 @@ function toMinHHMM(t){const [h,m]=String(t||'0:0').split(':').map(Number);return
 async function dkAtt(){
   const mv=DK.regMv||curMonthKey(),[Y,M]=mv.split('-').map(Number),dim=new Date(Y,M,0).getDate(),today=todayStr();
   const act=staffArr.filter(s=>s.active);
-  const [recs,marksAll,cfgs]=await Promise.all([fbList(p.recs(),where('date','>=',mv+'-01'),where('date','<=',mv+'-31')).catch(()=>[]),fbList(p.days()).catch(()=>[]),Promise.all(act.map(s=>getSalaryCfg(s.id).catch(()=>defaultSalaryCfg())))]);
+  const [recs,marksAll,cfgs]=await Promise.all([dkMonthRecs(mv),dkMarks(),Promise.all(act.map(s=>getSalaryCfg(s.id).catch(()=>defaultSalaryCfg())))]);
   const R={};recs.forEach(r=>R[r.staffId+'_'+r.date]=r);const MK={};marksAll.forEach(m=>{if(m.date&&m.date.startsWith(mv))MK[m.date+(m.staffId?'_'+m.staffId:'')]=m;});
   const D=Array.from({length:dim},(_,i)=>i+1);
   const body=act.map((s,i)=>{const c=cfgs[i]||defaultSalaryCfg(),std=(c.standardHours||calcAutoStdHoursFromCfg(c))*60;let P=0,A=0,L=0,T=0;
@@ -4450,10 +4495,10 @@ async function dkPay(){
   const mv=DK.mv||(DK.mv=prevMonthKey()),cur=mv===curMonthKey(),today=todayStr();
   const ledgersArr=await Promise.all(staffArr.map(s=>fbGet(p.advLedger(s.id)).catch(()=>null)));
   const ledgers={};staffArr.forEach((s,i)=>ledgers[s.id]=ledgersArr[i]);
-  const recs=await fbList(p.recs(),where('date','>=',mv+'-01'),where('date','<=',mv+'-31')).catch(()=>[]);
+  const recs=await dkMonthRecs(mv);
   // Inactive staff only when they worked this month and still owe (final settlement) — not every month after they left
   const list=staffArr.filter(s=>s.active||(ledgers[s.id]&&ledgers[s.id].balance>0&&recs.some(r=>r.staffId===s.id)));
-  const [marks,advs,cfgA,payA,draftA]=await Promise.all([fbList(p.days()).catch(()=>[]),fbList(p.advances()).catch(()=>[]),
+  const [marks,advs,cfgA,payA,draftA]=await Promise.all([dkMarks(),fbList(p.advances()).catch(()=>[]),
     Promise.all(list.map(s=>getSalaryCfg(s.id).catch(()=>defaultSalaryCfg()))),Promise.all(list.map(s=>fbGet(p.payment(s.id,mv)).catch(()=>null))),Promise.all(list.map(s=>fbGet(p.payDraft(s.id,mv)).catch(()=>null)))]);
   const cfgs={};list.forEach((s,i)=>cfgs[s.id]=cfgA[i]);
   const pre={recs,marks,advs,ledgers,cfgs};
@@ -4644,7 +4689,8 @@ function dkDelta(cur,prev,kind,goodUp){if(cur==null||prev==null)return '<span cl
   const good=goodUp?d>0:d<0;return `<span style="color:${good?'var(--green)':'var(--red)'}">${d>0?'▲':'▼'} ${Math.abs(d)}${kind==='pct'?' pts':kind==='h'?'h':''}</span> <span class="dk-mute">vs last month</span>`;}
 async function dkAnalytics(){
   const mv=DK.anMv||curMonthKey(),pv=dkShiftMv(mv,-1),act=staffArr.filter(s=>s.active);
-  const [recs,marks,cfgs]=await Promise.all([fbList(p.recs(),where('date','>=',pv+'-01'),where('date','<=',mv+'-31')).catch(()=>[]),fbList(p.days()).catch(()=>[]),Promise.all(act.map(s=>getSalaryCfg(s.id).catch(()=>defaultSalaryCfg())))]);
+  const [recA,recB,marks,cfgs]=await Promise.all([dkMonthRecs(pv),dkMonthRecs(mv),dkMarks(),Promise.all(act.map(s=>getSalaryCfg(s.id).catch(()=>defaultSalaryCfg())))]);
+  const recs=recA.concat(recB);
   const A=dkAnalyze(mv,act,cfgs,recs,marks),B=dkAnalyze(pv,act,cfgs,recs,marks),t=A.tot,b=B.tot;
   DK.anData=A;
   // Insights (plain sentences, only when the data supports them)
@@ -5298,7 +5344,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.0</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.1</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -5828,6 +5874,12 @@ body.dk-body .sheet{border-radius:20px}
         </div>
         <button class="btn btn-primary" onclick="manualEntry()">Save Entry</button>
       </div><!-- /card manual entry -->
+      <div class="card">
+        <div class="card-title">⚡ Speed up the app</div>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Older selfies were saved at full camera size and make every month slow to load. This shrinks the stored photos of past days to the same small size new photos use (faces stay clear). It can't be undone and may take a few minutes — keep this page open.</p>
+        <button class="btn btn-primary btn-sm" id="shrink-btn" onclick="shrinkStoredSelfies()">Shrink stored photos</button>
+        <p style="font-size:12px;color:var(--muted);margin-top:8px;" id="shrink-status"></p>
+      </div>
         </div>
       </details>
       <details class="set-group">
@@ -6307,7 +6359,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.0</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.1</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6315,11 +6367,23 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.25.1 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.1</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Faster: staff selfies are now saved small (about 10× lighter), like the kiosk</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Computer layout keeps each month in memory instead of downloading it again on every page</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Settings → Attendance → “Shrink stored photos” makes old months load fast too (one time)</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.25.0 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.0</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.25.0</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Computer layout: new Analytics page — attendance %, on-time %, hours, overtime vs last month, day-by-day and weekday charts, arrival times, insights and a sortable staff table</span></div>
