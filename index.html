@@ -47,7 +47,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.23.3';
+const APP_VERSION = 'v1.23.4';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -1932,6 +1932,7 @@ function updatePayMonthDisplay(){
   var d=new Date(parseInt(parts[0]),parseInt(parts[1])-1,1);
   disp.textContent=d.toLocaleString('default',{month:'long',year:'numeric'});
   setNextDisabled('button[onclick="changePayMonth(1)"]',pm.value>=curMonthKey());
+  refreshIncentiveBulkLabel();
   var badge=document.getElementById('pay-month-badge');
   if(badge){
     var cur=curMonthKey();
@@ -1953,6 +1954,7 @@ window.changePayMonth=function(dir){
   var advInput=document.getElementById('pay-advance-recover');
   if(advInput) delete advInput.dataset.userEdited;
   renderPayroll();
+  refreshIncentiveBulk();
 };
 
 var payCtxKey='',payDirty=false;
@@ -1968,6 +1970,63 @@ window.payInputsChanged=function(el){
   if(el&&el.id==='pay-advance-recover')el.dataset.userEdited='1';
   setPayDirty(true);
 };
+// ── Sales incentive for all staff at once (saved like Apply; paid months are locked) ──
+function refreshIncentiveBulk(){
+  refreshIncentiveBulkLabel();
+  var d=document.getElementById('inc-bulk');
+  if(d&&d.open)renderIncentiveBulk();
+}
+window.renderIncentiveBulk=async function(){
+  const body=document.getElementById('inc-bulk-body'),mv=v('pay-month');
+  if(!body)return;
+  refreshIncentiveBulkLabel();
+  if(!mv){body.innerHTML='<p style="font-size:13px;color:var(--muted)">Pick a month above.</p>';return;}
+  body.innerHTML='<p style="font-size:13px;color:var(--muted)">Loading…</p>';
+  const staff=staffArr.filter(function(s){return s.active;});
+  if(!staff.length){body.innerHTML='<p style="font-size:13px;color:var(--muted)">No active staff.</p>';return;}
+  const docs=await Promise.all(staff.map(function(s){
+    return Promise.all([fbGet(p.payment(s.id,mv)).catch(function(){return null;}),fbGet(p.payDraft(s.id,mv)).catch(function(){return null;})]);
+  }));
+  if(v('pay-month')!==mv)return; // month changed while loading
+  body.innerHTML='<div class="inc-bulk-grid">'+staff.map(function(s,i){
+    const paid=docs[i][0],draft=docs[i][1];
+    const val=paid?(paid.incentive||0):(draft&&draft.incentive?draft.incentive:'');
+    return '<div class="inc-bulk-row"><div class="inc-bulk-name">'+ksEsc(s.name)+(paid?' <span class="status-approved" style="font-size:10px;">Paid</span>':'')+'</div>'+
+      '<input type="number" inputmode="numeric" min="0" class="form-input inc-bulk-inp" data-sid="'+ksEsc(s.id)+'" placeholder="0" value="'+ksEsc(String(val))+'"'+
+      (paid?' disabled title="Already paid — change it from this person\'s payroll (Update Payment)"':' oninput="incBulkTotal()"')+'></div>';
+  }).join('')+'</div>'+
+  '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;flex-wrap:wrap;">'+
+    '<div style="font-size:13px;color:var(--muted);">Total: <b id="inc-bulk-total" style="color:var(--text);">₹0</b></div>'+
+    '<button class="btn btn-primary" style="width:auto;padding:12px 22px;" onclick="saveIncentiveBulk()">✓ Save All Incentives</button></div>';
+  incBulkTotal();
+};
+function refreshIncentiveBulkLabel(){
+  var lbl=document.getElementById('inc-bulk-month');
+  if(lbl)lbl.textContent=(document.getElementById('pay-month-display')||{}).textContent||'';
+}
+window.incBulkTotal=function(){
+  var t=0;document.querySelectorAll('.inc-bulk-inp').forEach(function(el){t+=parseInt(el.value)||0;});
+  var el=document.getElementById('inc-bulk-total');if(el)el.textContent='₹'+t.toLocaleString('en-IN');
+};
+window.saveIncentiveBulk=async function(){
+  const mv=v('pay-month');if(!mv)return;
+  const inputs=[].slice.call(document.querySelectorAll('.inc-bulk-inp')).filter(function(el){return !el.disabled;});
+  if(!inputs.length)return toast('Everyone is already paid for this month');
+  setLoading(true,'Saving incentives…');
+  try{
+    const batch=writeBatch(db);
+    inputs.forEach(function(el){
+      // merge keeps an advance amount saved earlier with Apply
+      batch.set(doc(db,p.payDraft(el.dataset.sid,mv)),{staffId:el.dataset.sid,month:mv,incentive:parseInt(el.value)||0,ts:Date.now()},{merge:true});
+    });
+    await batch.commit();
+    toast('✓ Incentives saved for '+inputs.length+' staff');
+    // Reload the open payroll so it shows the new incentive (unless the owner is mid-edit there)
+    if(v('pay-staff-sel')&&!payDirty){payCtxKey='';await renderPayroll();}
+  }catch(e){toast('Error: '+e.message,true);}
+  setLoading(false);
+};
+
 // Apply saves the amounts for this staff + month (so they survive a refresh), then recalculates.
 // A paid month keeps its recorded payment; changes there are saved with "Update Payment".
 window.applyPayInputs=async function(){
@@ -4377,6 +4436,10 @@ textarea.form-input{resize:none;}
 .section-sub{color:var(--muted);font-size:13px;margin-bottom:18px;}
 .divider{height:1px;background:var(--border);margin:14px 0;}
 .scroll-list{max-height:340px;overflow-y:auto;}
+.inc-bulk-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px 20px;}
+.inc-bulk-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 0;border-bottom:1px solid var(--border);}
+.inc-bulk-name{font-size:14px;font-weight:600;min-width:0;}
+.inc-bulk-inp{width:130px;flex-shrink:0;padding:9px 12px;}
 /* ── Owner panel on a computer: sidebar tabs + two-column pages. Phones keep the single column. ── */
 @media(min-width:1024px){
   #screen-owner:has(#owner-panel-wrap[style*="block"]){max-width:none;box-shadow:none;}
@@ -4436,7 +4499,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.23.3</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.23.4</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4750,6 +4813,10 @@ textarea.form-input{resize:none;}
         </div>
         <div id="pay-month-badge" class="pay-month-badge" style="display:none;"></div>
       </div>
+      <div class="card"><details id="inc-bulk" ontoggle="if(this.open)renderIncentiveBulk()">
+        <summary class="card-title" style="cursor:pointer;margin-bottom:0;">🎯 Sales Incentive — all staff <span style="text-transform:none;letter-spacing:0;font-weight:400;">· <span id="inc-bulk-month"></span> · enter everyone's at once · tap to open</span></summary>
+        <div id="inc-bulk-body" style="margin-top:12px;"></div>
+      </details></div>
       <div id="payroll-output" style="display:none;">
         <div class="pc-cols pc-pay"><div class="pc-col pc-sticky">
         <div class="pay-hero">
@@ -5438,7 +5505,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.23.3</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.23.4</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -5446,11 +5513,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.23.4 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.23.4</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll: “🎯 Sales Incentive — all staff” list — enter everyone's incentive for the month and save in one go (paid staff are locked)</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.23.3 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.23.3</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.23.3</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll: “Apply to Salary” now saves the incentive and advance for that staff + month — they stay after a refresh until you mark paid</span></div>
