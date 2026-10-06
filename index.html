@@ -47,7 +47,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.24.0';
+const APP_VERSION = 'v1.24.1';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -4450,8 +4450,10 @@ async function dkPay(){
   const mv=DK.mv||(DK.mv=prevMonthKey()),cur=mv===curMonthKey(),today=todayStr();
   const ledgersArr=await Promise.all(staffArr.map(s=>fbGet(p.advLedger(s.id)).catch(()=>null)));
   const ledgers={};staffArr.forEach((s,i)=>ledgers[s.id]=ledgersArr[i]);
-  const list=staffArr.filter(s=>s.active||(ledgers[s.id]&&ledgers[s.id].balance>0));
-  const [recs,marks,advs,cfgA,payA,draftA]=await Promise.all([fbList(p.recs(),where('date','>=',mv+'-01'),where('date','<=',mv+'-31')).catch(()=>[]),fbList(p.days()).catch(()=>[]),fbList(p.advances()).catch(()=>[]),
+  const recs=await fbList(p.recs(),where('date','>=',mv+'-01'),where('date','<=',mv+'-31')).catch(()=>[]);
+  // Inactive staff only when they worked this month and still owe (final settlement) — not every month after they left
+  const list=staffArr.filter(s=>s.active||(ledgers[s.id]&&ledgers[s.id].balance>0&&recs.some(r=>r.staffId===s.id)));
+  const [marks,advs,cfgA,payA,draftA]=await Promise.all([fbList(p.days()).catch(()=>[]),fbList(p.advances()).catch(()=>[]),
     Promise.all(list.map(s=>getSalaryCfg(s.id).catch(()=>defaultSalaryCfg()))),Promise.all(list.map(s=>fbGet(p.payment(s.id,mv)).catch(()=>null))),Promise.all(list.map(s=>fbGet(p.payDraft(s.id,mv)).catch(()=>null)))]);
   const cfgs={};list.forEach((s,i)=>cfgs[s.id]=cfgA[i]);
   const pre={recs,marks,advs,ledgers,cfgs};
@@ -5156,7 +5158,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.24.0</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.24.1</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6165,7 +6167,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.24.0</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.24.1</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6173,11 +6175,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.24.1 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.24.1</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Computer payroll: inactive staff only show in a month they actually worked (and still owe an advance) — not in every month after they left</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.24.0 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.24.0</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.24.0</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>New computer layout for the owner panel (laptop / desktop) — the phone layout is unchanged</span></div>
