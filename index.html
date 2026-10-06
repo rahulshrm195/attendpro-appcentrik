@@ -47,7 +47,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.22.5';
+const APP_VERSION = 'v1.22.6';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -1694,68 +1694,79 @@ window.renderReport=async function(){
         if((b.date||'')!==(a.date||''))return (b.date||'').localeCompare(a.date||'');
         return (a.staffName||'').localeCompare(b.staffName||'');
       });
-    // Build a set of dates that have records for selected staff
     var dim2=new Date(d.getFullYear(),d.getMonth()+1,0).getDate();
     var today2=todayStr();
-    var missingDays=[];
+    var DOW_NAMES=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    // Weekly off / holiday / leave for the selected staff on a date (null = working day)
+    var dayOff=function(ds){
+      if(sid==='all')return null;
+      var mk=marks[ds]||marks[ds+'_'+sid];
+      if(mk&&mk.type==='holiday')return {kind:'holiday',label:'Holiday'+(mk.note?' · '+mk.note:'')};
+      if(mk&&mk.type==='leave'){
+        var lt=mk.leaveType==='half'?'Half-day leave':mk.leaveType==='custom'?'Part-day leave':'Leave';
+        return {kind:'leave',part:mk.leaveType==='half'||mk.leaveType==='custom',label:lt+(mk.paidLeave?' (paid)':'')+(mk.note?' · '+mk.note:'')};
+      }
+      var dw=new Date(ds+'T00:00:00').getDay();
+      if(weeklyOff>=0&&dw===weeklyOff)return {kind:'woff',label:'Weekly off ('+DOW_NAMES[dw]+')'};
+      return null;
+    };
+    var recRowHtml=function(r){
+      var sessions=r.sessions&&r.sessions.length?r.sessions:null;
+      var hasOpenSession=sessions?sessions.some(function(ss){return !ss.outTime;}):!r.outTime;
+      var off=dayOff(r.date);
+      return attRowHtml({
+        name:r.staffName,
+        highlight:hasOpenSession,
+        tags:(sid!=='all'?'<span class="att-date">'+ksEsc(dateWithDay(r.date))+'</span>':'')+
+          (off?'<span class="log-off-tag">'+ksEsc(off.kind==='woff'?'Worked on weekly off':off.label)+'</span>':'')+
+          (hasOpenSession?'<span class="att-tag-open">⏳ No Punch Out</span>':'')+
+          (r.late?'<span class="late-tag">LATE</span>':'')+(r.gpsFlag?'<span class="gps-flag-tag">⚠️ LOCATION</span>':'')+
+          (r.manualEdit?'<span class="att-muted">edited</span>':'')+(r.manual?'<span class="att-muted">manual</span>':''),
+        thumb:selfiePairHtml(r,r.staffName),
+        edit:attEditBtn(r.staffId,r.date),
+        body:punchLinesHtml(r,r.inDist!=null?r.inDist+'m from store':'')
+      });
+    };
+    var rhtml='',missingN=0;
     if(sid!=='all'){
-      for(var dd=1;dd<=dim2;dd++){
-        var ds=d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(dd);
-        if(ds>today2) break; // don't show future days
-        if(!recs[sid+'_'+ds]){
-          // Check if it's a weekly off or holiday
-          var dow2=new Date(d.getFullYear(),d.getMonth(),dd).getDay();
-          var mark2=marks[ds]||(marks[ds+'_'+sid]);
-          var isWoff=weeklyOff>=0&&dow2===weeklyOff;
-          var isHol=mark2&&(mark2.type==='holiday'||mark2.type==='leave');
-          if(!isWoff&&!isHol) missingDays.push(ds);
+      // One list, newest date first: punch records, weekly offs / holidays / leave, and missing days
+      var sfR=staffArr.find(function(s){return s.id===sid;});
+      var nameR=sfR?sfR.name:sid,joinR=(sfR&&sfR.joiningDate)||'';
+      var lastDay=prefix<today2.slice(0,7)?dim2:(prefix===today2.slice(0,7)?parseInt(today2.slice(8),10):0);
+      for(var dd=lastDay;dd>=1;dd--){
+        var ds=prefix+'-'+pad(dd);
+        var rec=recs[sid+'_'+ds];
+        if(rec){rhtml+=recRowHtml(rec);continue;}
+        if(joinR&&ds<joinR)continue;
+        var off=dayOff(ds);
+        if(off&&!off.part){
+          rhtml+='<div class="row log-off"><div class="row-main"><div class="row-title">'+ksEsc(nameR)+'</div>'
+            +'<div class="row-sub">'+dateWithDay(ds)+' · '+ksEsc(off.label)+'</div></div>'
+            +'<span class="log-off-tag">'+(off.kind==='woff'?'Weekly off':off.kind==='holiday'?'Holiday':'Leave')+'</span></div>';
+          continue;
         }
+        if(ds===today2)continue; // today isn't over yet
+        missingN++;
+        rhtml+='<div class="row log-missing"><div class="row-main"><div class="row-title">'+ksEsc(nameR)+'</div>'
+          +'<div class="row-sub">'+dateWithDay(ds)+' · <b>No punch record</b>'+(off?' · '+ksEsc(off.label):'')+'</div></div>'
+          +'<button class="btn btn-ghost btn-xs" style="color:var(--green);border-color:var(--green);font-size:11px;padding:4px 8px;white-space:nowrap;" onclick="openAddEntry(\''+sid+'\',\''+ds+'\')">+ Add</button>'
+          +'</div>';
       }
-    }
-    if(!list.length && !missingDays.length){
-      document.getElementById('report-log').innerHTML='<div class="empty-state"><div class="emoji">📅</div>No records</div>';
     } else {
-      var rhtml='';
-      // Show missing days first (most recent first) with Add Entry button
-      if(missingDays.length&&sid!=='all'){
-        rhtml+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin-bottom:6px;letter-spacing:.5px;">MISSING ENTRIES</div>';
-        missingDays.slice().reverse().forEach(function(ds){
-          var sf2=staffArr.find(function(s){return s.id===sid;});
-          rhtml+='<div class="row" style="opacity:0.7;"><div class="row-main"><div class="row-title">'+(sf2?sf2.name:sid)+'</div>'
-            +'<div class="row-sub">'+dateWithDay(ds)+' · No punch record</div></div>'
-            +'<button class="btn btn-ghost btn-xs" style="color:var(--green);border-color:var(--green);font-size:11px;padding:4px 8px;white-space:nowrap;" onclick="openAddEntry(\''+sid+'\',\''+ds+'\')">+ Add</button>'
-            +'</div>';
-        });
-        rhtml+='<div style="font-size:11px;font-weight:700;color:var(--muted);margin:12px 0 6px;letter-spacing:.5px;">EXISTING RECORDS</div>';
-      }
       var lastHdr='';
-      for(var ri=0;ri<list.length;ri++){
-        var r=list[ri];
+      list.forEach(function(r,ri){
         var rOpen=r.sessions&&r.sessions.length?r.sessions.some(function(ss){return !ss.outTime;}):!r.outTime;
         var hdr=rOpen?'⏳ NO PUNCH-OUT':new Date(r.date+'T00:00:00').toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'}).toUpperCase();
-        if(sid==='all'&&hdr!==lastHdr){
+        if(hdr!==lastHdr){
           rhtml+='<div style="font-size:11px;font-weight:700;color:'+(rOpen?'var(--accent)':'var(--muted)')+';margin:'+(ri?'14px':'0')+' 0 4px;letter-spacing:.5px;">'+hdr+'</div>';
           lastHdr=hdr;
         }
-        var sessions=r.sessions&&r.sessions.length?r.sessions:null;
-        var inT=sessions?sessions[0].inTime:r.inTime;
-        var sub=punchLinesHtml(r,r.inDist!=null?r.inDist+'m from store':'');
-        var selfie=sessions?sessions[0].inSelfie:r.inSelfie;
-        var hasOpenSession=sessions?sessions.some(function(ss){return !ss.outTime;}):!r.outTime;
-        rhtml+=attRowHtml({
-          name:r.staffName,
-          highlight:hasOpenSession,
-          tags:(sid!=='all'?'<span class="att-date">'+ksEsc(dateWithDay(r.date))+'</span>':'')+
-            (hasOpenSession?'<span class="att-tag-open">⏳ No Punch Out</span>':'')+
-            (r.late?'<span class="late-tag">LATE</span>':'')+(r.gpsFlag?'<span class="gps-flag-tag">⚠️ LOCATION</span>':'')+
-            (r.manualEdit?'<span class="att-muted">edited</span>':'')+(r.manual?'<span class="att-muted">manual</span>':''),
-          thumb:selfiePairHtml(r,r.staffName),
-          edit:attEditBtn(r.staffId,r.date),
-          body:sub
-        });
-      }
-      document.getElementById('report-log').innerHTML=rhtml;
+        rhtml+=recRowHtml(r);
+      });
     }
+    var cntEl=document.getElementById('report-missing-count');
+    if(cntEl)cntEl.innerHTML=sid==='all'?'':(missingN?'<span class="log-count log-count-bad">⚠ Missing entries: '+missingN+'</span>':'<span class="log-count log-count-ok">✓ Missing entries: 0</span>');
+    document.getElementById('report-log').innerHTML=rhtml||'<div class="empty-state"><div class="emoji">📅</div>No records</div>';
   }catch(e){document.getElementById('report-log').innerHTML='<div class="empty-state">Error: '+e.message+'</div>';}
   setLoading(false);
 };
@@ -4187,6 +4198,13 @@ textarea.form-input{resize:none;}
 .row-title{font-weight:600;font-size:14px;}
 .row-sub{font-size:12px;color:var(--muted);margin-top:2px;}
 .att-row{padding:12px 0;border-bottom:1px solid var(--border);}
+.row.log-missing{background:rgba(239,68,68,.10);border-left:4px solid var(--red);border-radius:10px;padding:12px 10px;margin:4px 0;}
+.row.log-missing .row-sub{color:var(--red);}
+.row.log-off{background:rgba(59,130,246,.08);border-left:4px solid var(--blue);border-radius:10px;padding:10px;margin:4px 0;}
+.log-off-tag{font-size:10px;font-weight:700;color:var(--blue);background:rgba(59,130,246,.12);border-radius:10px;padding:2px 8px;white-space:nowrap;}
+.log-count{font-size:11px;font-weight:700;letter-spacing:.3px;text-transform:none;border-radius:20px;padding:3px 10px;}
+.log-count-bad{color:var(--red);background:rgba(239,68,68,.12);}
+.log-count-ok{color:var(--green);background:rgba(34,197,94,.12);}
 .att-row:last-child{border-bottom:none;}
 .att-open{border-left:3px solid var(--accent);padding-left:10px;}
 .att-head{display:flex;align-items:center;gap:10px;}
@@ -4336,7 +4354,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.22.5</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.22.6</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4610,7 +4628,7 @@ textarea.form-input{resize:none;}
         </div>
         <p style="font-size:11px;color:var(--muted);margin-top:8px;">🟠 Orange dot (right) = late arrival &nbsp;·&nbsp; 🟣 Purple dot (left) = worked less than standard hours</p>
       </div>
-      <div class="card"><div class="card-title">Log</div>
+      <div class="card"><div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">Log<span id="report-missing-count"></span></div>
         <div class="scroll-list" id="report-log" style="max-height:70vh;"></div>
         <div style="display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
           <button class="btn btn-ghost btn-sm" onclick="exportAttendanceCSV()" style="flex:1;">📊 Export CSV</button>
@@ -5318,7 +5336,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.22.5</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.22.6</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -5326,11 +5344,24 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.22.6 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.22.6</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Reports log for one staff is now a single list by date — punches, weekly offs, holidays, leave and missing days together</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Missing days are highlighted in red; weekly offs, holidays and leave in blue</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>“Missing entries” count at the top of the log — goes to 0 when all are filled</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Days worked on a weekly off are tagged “Worked on weekly off”</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.22.5 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.22.5</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.22.5</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Reports log shows the day (Mon, Tue…) next to each date in Missing Entries and Existing Records</span></div>
