@@ -47,7 +47,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.22.8';
+const APP_VERSION = 'v1.22.9';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -2155,7 +2155,7 @@ window.renderPayroll=async function(){
         if(advBreakdown){
           var bHtml='';
           if(carryFwdAmt>0) bHtml+='<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:3px;"><span>Carried forward</span><span>₹'+carryFwdAmt.toLocaleString('en-IN')+'</span></div>';
-          if(thisMonthTotal>0) bHtml+='<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:8px;"><span>This month ('+thisMonthAdvs.length+' entry'+(thisMonthAdvs.length!==1?'s':'')+')</span><span>₹'+thisMonthTotal.toLocaleString('en-IN')+'</span></div>';
+          if(thisMonthTotal>0) bHtml+='<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:8px;"><span>This month ('+thisMonthAdvs.length+(thisMonthAdvs.length!==1?' entries':' entry')+')</span><span>₹'+thisMonthTotal.toLocaleString('en-IN')+'</span></div>';
           advBreakdown.innerHTML=bHtml;
         }
         // Default: recover only this month's advances
@@ -2262,7 +2262,7 @@ window.renderPayroll=async function(){
     out.dataset.totalOutstanding=totalOutstanding;
     const badge=document.getElementById('pay-status-badge');
     var markBtn=document.getElementById('pay-mark-btn');
-    if(markBtn)markBtn.textContent=payRec?'✓ Update Payment':'✓ Mark as Paid';
+    if(markBtn){var netTxt=document.getElementById('pb-net').textContent;markBtn.textContent=payRec?'✓ Update Payment ('+netTxt+')':'✓ Mark '+netTxt+' as Paid';}
     if(payRec&&newCtx){var pmEl=document.getElementById('pay-mode');if(pmEl&&payRec.mode)pmEl.value=payRec.mode;var pnEl=document.getElementById('pay-note');if(pnEl)pnEl.value=payRec.note||'';}
     else if(newCtx){var pnEl2=document.getElementById('pay-note');if(pnEl2)pnEl2.value='';}
     if(badge)badge.innerHTML=payRec?'<span class="status-approved">✓ Paid '+payRec.date+' via '+payRec.mode+'</span>':'<span class="status-pending">Unpaid</span>';
@@ -4363,7 +4363,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.22.8</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.22.9</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4682,7 +4682,27 @@ textarea.form-input{resize:none;}
           <div style="margin-top:10px;" id="pay-status-badge"></div>
         </div>
         <div class="card">
-          <div class="card-title">Breakdown</div>
+          <div class="card-title">① Attendance This Month</div>
+          <div class="stat-grid" id="pay-att-stats"></div>
+          <div id="pay-ot-detail" style="font-size:12px;color:var(--muted);margin-top:6px;"></div>
+        </div>
+        <div class="card">
+          <div class="card-title">② Incentive &amp; Advance</div>
+          <div class="form-group"><label class="form-label">Sales Incentive (₹)</label><input type="number" class="form-input" id="pay-incentive-inp" placeholder="0" min="0" oninput="schedulePayroll()"></div>
+          <!-- Advance Panel — shown only when outstanding exists -->
+          <div id="pay-advance-panel" style="display:none;background:var(--card2,rgba(255,165,0,0.08));border:1.5px solid var(--accent);border-radius:12px;padding:14px;margin-bottom:14px;">
+            <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:10px;">⚠️ Advance Outstanding</div>
+            <div id="adv-breakdown"></div>
+            <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:700;margin-bottom:12px;">
+              <span>Total Outstanding</span><span id="adv-outstanding-total" style="color:var(--accent);">₹0</span></div>
+            <div class="form-group" style="margin-bottom:6px;"><label class="form-label">Recover this month (₹)</label>
+              <input type="number" class="form-input" id="pay-advance-recover" placeholder="0" min="0"
+                oninput="this.dataset.userEdited='1';schedulePayroll()"></div>
+            <div style="font-size:12px;font-weight:600;margin-top:6px;" id="pb-adv-carry"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">③ Salary Breakdown</div>
           <div class="pay-section">Earnings</div>
           <div class="pay-row"><span class="pay-row-lbl" id="pb-base-lbl">Base Salary</span><span class="pay-row-val" style="color:var(--green);" id="pb-base">₹0</span></div>
           <div class="pay-row"><span class="pay-row-lbl" id="pb-ot-lbl">Overtime (0 hrs)</span><span class="pay-row-val" style="color:var(--green);" id="pb-ot">+₹0</span></div>
@@ -4704,27 +4724,7 @@ textarea.form-input{resize:none;}
           <div class="pay-row pay-info"><span class="pay-row-lbl" id="pb-absent-lbl">Absent (0 days)</span><span class="pay-row-val" id="pb-absent">₹0</span></div>
         </div>
         <div class="card">
-          <div class="card-title">Adjustments</div>
-          <div class="form-group"><label class="form-label">Sales Incentive (₹)</label><input type="number" class="form-input" id="pay-incentive-inp" placeholder="0" min="0" oninput="schedulePayroll()"></div>
-          <!-- Advance Panel — shown only when outstanding exists -->
-          <div id="pay-advance-panel" style="display:none;background:var(--card2,rgba(255,165,0,0.08));border:1.5px solid var(--accent);border-radius:12px;padding:14px;margin-bottom:14px;">
-            <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:10px;">⚠️ Advance Outstanding</div>
-            <div id="adv-breakdown"></div>
-            <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:700;margin-bottom:12px;">
-              <span>Total Outstanding</span><span id="adv-outstanding-total" style="color:var(--accent);">₹0</span></div>
-            <div class="form-group" style="margin-bottom:6px;"><label class="form-label">Recover this month (₹)</label>
-              <input type="number" class="form-input" id="pay-advance-recover" placeholder="0" min="0"
-                oninput="this.dataset.userEdited='1';schedulePayroll()"></div>
-            <div style="font-size:12px;font-weight:600;margin-top:6px;" id="pb-adv-carry"></div>
-          </div>
-        </div>
-        <div class="card">
-          <div class="card-title">Attendance This Month</div>
-          <div class="stat-grid" id="pay-att-stats"></div>
-          <div id="pay-ot-detail" style="font-size:12px;color:var(--muted);margin-top:6px;"></div>
-        </div>
-        <div class="card">
-          <div class="card-title">Mark Payment</div>
+          <div class="card-title">④ Pay &amp; Record</div>
           <div class="form-group"><label class="form-label">Payment Mode</label>
             <select class="form-input form-select" id="pay-mode"><option value="cash">💵 Cash</option><option value="upi">📱 UPI / GPay</option><option value="bank">🏦 Bank Transfer</option></select></div>
           <div class="form-group"><label class="form-label">Note (optional)</label><input class="form-input" id="pay-note" placeholder="e.g. GPay, UPI ref 1234"></div>
@@ -4734,9 +4734,11 @@ textarea.form-input{resize:none;}
           </div>
         </div>
       </div>
+      <div class="card"><div class="card-title" id="pay-history-title">Payment History</div><div class="scroll-list" id="pay-history-list"><p style="color:var(--muted);font-size:13px;">No payments yet</p></div></div>
       <!-- Advance tracker -->
-      <div class="card">
-        <div class="card-title">Advance Tracker</div>
+      <div class="card"><details id="adv-details">
+        <summary class="card-title" style="cursor:pointer;margin-bottom:0;">💸 Advances <span style="text-transform:none;letter-spacing:0;font-weight:400;">· give an advance, see all advances · tap to open</span></summary>
+        <div style="margin-top:14px;">
         <div class="form-group"><label class="form-label">Staff</label><select class="form-input form-select" id="adv-staff-sel" onchange="renderAdvList()"></select></div>
         <div class="two-col">
           <div class="form-group"><label class="form-label">Amount (₹)</label><input type="number" class="form-input" id="adv-amount" placeholder="0" min="0"></div>
@@ -4745,8 +4747,8 @@ textarea.form-input{resize:none;}
         <div class="form-group"><label class="form-label">Note</label><input class="form-input" id="adv-note" placeholder="e.g. Festival advance"></div>
         <button class="btn btn-primary" onclick="giveAdvance()">+ Give Advance</button>
         <div style="margin-top:14px;" id="adv-list"></div>
-      </div>
-      <div class="card"><div class="card-title" id="pay-history-title">Payment History</div><div class="scroll-list" id="pay-history-list"><p style="color:var(--muted);font-size:13px;">No payments yet</p></div></div>
+        </div>
+      </details></div>
     </div>
     <!-- STAFF -->
     <div class="page" id="owner-staff">
@@ -5349,7 +5351,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.22.8</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.22.9</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -5357,11 +5359,23 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.22.9 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.22.9</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll page in salary-day order: ① Attendance → ② Incentive &amp; Advance → ③ Salary Breakdown → ④ Pay &amp; Record</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Pay button shows the amount, e.g. “✓ Mark ₹11,562 as Paid”</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payment History comes next; giving advances moved into a tap-to-open “Advances” section at the bottom</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.22.8 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.22.8</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.22.8</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Staff tab: inactive staff moved to their own “Inactive Staff” list below the active ones (tap to show)</span></div>
