@@ -47,7 +47,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.22.7';
+const APP_VERSION = 'v1.22.8';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -2620,9 +2620,9 @@ window.addStaff=async function(){
 
 function renderStaffList(){
   const el=document.getElementById('staff-list-display');if(!el)return;
-  if(!staffArr.length){el.innerHTML='<div class="empty-state"><div class="emoji">👥</div>No staff yet</div>';return;}
-  const today=todayStr();
-  el.innerHTML=staffArr.map((s,i)=>`
+  if(!staffArr.length){el.innerHTML='<div class="empty-state"><div class="emoji">👥</div>No staff yet</div>';var iw=document.getElementById('staff-inactive-card');if(iw)iw.style.display='none';return;}
+  // Active staff here; disabled staff in their own card below
+  const card=s=>`
     <div class="staff-quick-card" style="${!s.active?'opacity:0.6;':''}">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
         <div style="display:flex;align-items:center;gap:10px;">
@@ -2642,7 +2642,15 @@ function renderStaffList(){
         <button class="btn btn-ghost btn-xs" onclick="toggleStaff('${s.id}')">${s.active?'Disable':'Enable'}</button>
         <button class="btn btn-ghost btn-xs" style="color:var(--red);" onclick="deleteStaff('${s.id}','${s.name}')">🗑️</button>
       </div>
-    </div>`).join('');
+    </div>`;
+  const active=staffArr.filter(s=>s.active),inactive=staffArr.filter(s=>!s.active);
+  el.innerHTML=active.length?active.map(card).join(''):'<div class="empty-state">No active staff</div>';
+  const wrap=document.getElementById('staff-inactive-card');
+  if(wrap){
+    wrap.style.display=inactive.length?'block':'none';
+    document.getElementById('staff-inactive-count').textContent=inactive.length;
+    document.getElementById('staff-inactive-display').innerHTML=inactive.map(card).join('');
+  }
 }
 
 window.editStaffName=async function(id){
@@ -4355,7 +4363,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.22.7</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.22.8</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4753,6 +4761,10 @@ textarea.form-input{resize:none;}
         <button class="btn btn-primary" onclick="addStaff()">+ Add Staff</button>
       </div>
       <div class="card"><div class="card-title">Staff Members</div><div id="staff-list-display"></div></div>
+      <div class="card" id="staff-inactive-card" style="display:none;"><details>
+        <summary class="card-title" style="cursor:pointer;margin-bottom:0;">Inactive Staff (<span id="staff-inactive-count">0</span>) <span style="text-transform:none;letter-spacing:0;font-weight:400;">· tap to show</span></summary>
+        <div id="staff-inactive-display" style="margin-top:12px;"></div>
+      </details></div>
     </div>
     <!-- SETTINGS -->
     <div class="page" id="owner-settings">
@@ -5337,7 +5349,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.22.7</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.22.8</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -5345,11 +5357,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.22.8 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.22.8</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Staff tab: inactive staff moved to their own “Inactive Staff” list below the active ones (tap to show)</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.22.7 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.22.7</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.22.7</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Salary Settings: Auto OT rate label now says salary ÷ days in month (as payroll already calculates) and shows the rate range by month length</span></div>
