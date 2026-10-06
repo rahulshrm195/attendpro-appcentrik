@@ -47,7 +47,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.23.1';
+const APP_VERSION = 'v1.23.2';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -1954,9 +1954,20 @@ window.changePayMonth=function(dir){
   renderPayroll();
 };
 
-var payCtxKey='',payTimer=null;
-// Typing in Incentive / Recover waits for a pause before recalculating
-window.schedulePayroll=function(){clearTimeout(payTimer);payTimer=setTimeout(function(){renderPayroll();},450);};
+var payCtxKey='',payDirty=false;
+// Incentive / Recover amounts only count once the owner presses Apply
+function setPayDirty(on){
+  payDirty=on;
+  var ab=document.getElementById('pay-apply-btn'),hint=document.getElementById('pay-apply-hint'),mb=document.getElementById('pay-mark-btn');
+  if(ab)ab.disabled=!on;
+  if(hint)hint.style.display=on?'block':'none';
+  if(mb){mb.disabled=on;mb.title=on?'Press Apply first':'';}
+}
+window.payInputsChanged=function(el){
+  if(el&&el.id==='pay-advance-recover')el.dataset.userEdited='1';
+  setPayDirty(true);
+};
+window.applyPayInputs=function(){renderPayroll();};
 window.renderPayroll=async function(){
   const sid=v('pay-staff-sel'),mv=v('pay-month');
   const out=document.getElementById('payroll-output');
@@ -2266,6 +2277,7 @@ window.renderPayroll=async function(){
     if(markBtn){var netTxt=document.getElementById('pb-net').textContent;markBtn.textContent=payRec?'✓ Update Payment ('+netTxt+')':'✓ Mark '+netTxt+' as Paid';}
     if(payRec&&newCtx){var pmEl=document.getElementById('pay-mode');if(pmEl&&payRec.mode)pmEl.value=payRec.mode;var pnEl=document.getElementById('pay-note');if(pnEl)pnEl.value=payRec.note||'';}
     else if(newCtx){var pnEl2=document.getElementById('pay-note');if(pnEl2)pnEl2.value='';}
+    setPayDirty(false);
     if(badge)badge.innerHTML=payRec?'<span class="status-approved">✓ Paid '+payRec.date+' via '+payRec.mode+'</span>':'<span class="status-pending">Unpaid</span>';
   }catch(e){toast('Payroll error: '+e.message,true);}
   setLoading(false);
@@ -2274,6 +2286,7 @@ window.renderPayroll=async function(){
 window.markAsPaid=async function(){
   const sid=v('pay-staff-sel'),mv=v('pay-month');
   if(!sid||!mv)return toast('Select staff and month',true);
+  if(payDirty)return toast('Press Apply first so the salary includes the new incentive / advance',true);
   const out=document.getElementById('payroll-output');
   const net=document.getElementById('pb-net').textContent;
   const mode=v('pay-mode'),note=v('pay-note');
@@ -4392,7 +4405,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.23.1</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.23.2</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4722,7 +4735,7 @@ textarea.form-input{resize:none;}
         </div><div class="pc-col">
         <div class="card">
           <div class="card-title">② Incentive &amp; Advance</div>
-          <div class="form-group"><label class="form-label">Sales Incentive (₹)</label><input type="number" class="form-input" id="pay-incentive-inp" placeholder="0" min="0" oninput="schedulePayroll()"></div>
+          <div class="form-group"><label class="form-label">Sales Incentive (₹)</label><input type="number" class="form-input" id="pay-incentive-inp" placeholder="0" min="0" oninput="payInputsChanged(this)" onkeydown="if(event.key==='Enter')applyPayInputs()"></div>
           <!-- Advance Panel — shown only when outstanding exists -->
           <div id="pay-advance-panel" style="display:none;background:var(--card2,rgba(255,165,0,0.08));border:1.5px solid var(--accent);border-radius:12px;padding:14px;margin-bottom:14px;">
             <div style="font-size:13px;font-weight:700;color:var(--accent);margin-bottom:10px;">⚠️ Advance Outstanding</div>
@@ -4731,9 +4744,11 @@ textarea.form-input{resize:none;}
               <span>Total Outstanding</span><span id="adv-outstanding-total" style="color:var(--accent);">₹0</span></div>
             <div class="form-group" style="margin-bottom:6px;"><label class="form-label">Recover this month (₹)</label>
               <input type="number" class="form-input" id="pay-advance-recover" placeholder="0" min="0"
-                oninput="this.dataset.userEdited='1';schedulePayroll()"></div>
+                oninput="payInputsChanged(this)" onkeydown="if(event.key==='Enter')applyPayInputs()"></div>
             <div style="font-size:12px;font-weight:600;margin-top:6px;" id="pb-adv-carry"></div>
           </div>
+          <div id="pay-apply-hint" style="display:none;font-size:12px;font-weight:600;color:var(--accent);margin-bottom:8px;">Changed — press Apply to update the salary below.</div>
+          <button class="btn btn-primary" id="pay-apply-btn" onclick="applyPayInputs()" disabled>✓ Apply to Salary</button>
         </div>
         <div class="card">
           <div class="card-title">③ Salary Breakdown</div>
@@ -5392,7 +5407,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.23.1</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.23.2</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -5400,11 +5415,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.23.2 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.23.2</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll: incentive and advance amounts update the salary only when you press “✓ Apply to Salary” (or Enter). Mark as Paid waits until changes are applied</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.23.1 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.23.1</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.23.1</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll on a computer: Incentive &amp; Advance now sits right above the Salary Breakdown (② → ③ → ④ in one column); net amount and attendance stay in view on the left</span></div>
