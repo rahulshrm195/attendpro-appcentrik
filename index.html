@@ -47,7 +47,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.25.1';
+const APP_VERSION = 'v1.25.2';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -4437,7 +4437,7 @@ async function dkToday(){
       <div><div class="trk">${Array.from({length:H1-H0+1},(_,i)=>`<span class="g" style="left:${i/(H1-H0)*100}%"></span>`).join('')}
         ${x.k!=='off'?`<span class="sh" style="left:${pct(x.st)}%;width:${Math.max(0,pct(x.en)-pct(x.st))}%"></span>`:''}
         ${x.ss.filter(s=>s.in!=null).map(s=>{const e=s.out!=null?s.out:now;return `<span class="sg ${s.out==null?'open':''}" style="left:${pct(s.in)}%;width:${Math.max(.6,pct(e)-pct(s.in))}%" title="${dkT12(s.in)} → ${s.out!=null?dkT12(s.out):'still in'}"></span><span class="lb" style="left:${pct(s.in)}%">${dkT12(s.in)}</span>`;}).join('')}
-        ${x.lateBy>0?`<span class="lt" style="left:${pct(x.ss[0].in)}%"></span>`:''}<span class="now" style="left:${pct(now)}%"></span></div></div>
+        ${x.lateBy>0?`<span class="lt" style="left:${pct(x.ss[0].in)}%"></span>`:''}${now>=H0*60&&now<=H1*60?`<span class="now" style="left:${pct(now)}%"></span>`:''}</div></div>
       <div class="tot">${x.r?dkHM(dkLive(x.r)):'—'}</div></div>`;}).join('')||'<div class="dk-empty" style="grid-column:1/-1">Nobody here</div>'}</div></div>`;
 }
 window.DK_setTf=function(k){DK.tf=k;deskRender(true);};
@@ -5173,7 +5173,7 @@ body.dk-body .sheet{border-radius:20px}
 .dk-tl .row:hover>div{background:var(--s2)}
 .dk-tl .nm{padding:0 14px;cursor:pointer}
 .dk-tl .tot{justify-content:flex-end;padding-right:14px;font-weight:700;font-variant-numeric:tabular-nums}
-.trk{position:relative;width:100%;height:100%}
+.trk{position:relative;width:100%;height:100%;overflow:hidden}
 .trk .sh{position:absolute;top:14px;bottom:14px;background:var(--s3);border-radius:6px}
 .trk .g{position:absolute;top:0;bottom:0;border-left:1px dashed var(--border)}
 .trk .sg{position:absolute;top:19px;bottom:19px;border-radius:5px;background:var(--green)}
@@ -5344,7 +5344,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.1</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.2</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6359,7 +6359,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.1</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.2</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6367,11 +6367,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.25.2 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.2</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Shift timeline: the red “now” line no longer slides into the menu after midnight / before 9 am — it shows only during shop hours on the timeline</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.25.1 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.1</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.25.1</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Faster: staff selfies are now saved small (about 10× lighter), like the kiosk</span></div>
