@@ -47,7 +47,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.22.9';
+const APP_VERSION = 'v1.23.0';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -1191,7 +1191,7 @@ async function renderOwnerToday(){
     const cfgMap={};
     var cfgResults=await Promise.all(active.map(function(s){return getSalaryCfg(s.id);}));
     active.forEach(function(s,i){cfgMap[s.id]=cfgResults[i];});
-    let html='<div class="card"><div class="card-title">Today — '+today+'</div>';
+    let html='<div class="card"><div class="card-title">Today — '+today+'</div><div class="today-rows">';
     if(!active.length)html+='<p style="font-size:13px;color:var(--muted)">No staff yet. Go to Staff tab.</p>';
     active.forEach(function(s){
       const rec=recs[s.id+'_'+today];
@@ -1216,6 +1216,7 @@ async function renderOwnerToday(){
         body:sub
       });
     });
+    html+='</div>';
     const late=active.filter(s=>recs[s.id+'_'+today]?.late).map(s=>s.name);
     if(late.length)html+=`<div class="divider"></div><div style="color:var(--accent2);font-size:12px;font-weight:700">⚠️ Late: ${late.join(', ')}</div>`;
     const notIn=active.filter(s=>!recs[s.id+'_'+today]&&!(cfgMap[s.id]&&cfgMap[s.id].weeklyOff>=0&&cfgMap[s.id].weeklyOff===todayDow)).map(s=>s.name);
@@ -4332,6 +4333,34 @@ textarea.form-input{resize:none;}
 .section-sub{color:var(--muted);font-size:13px;margin-bottom:18px;}
 .divider{height:1px;background:var(--border);margin:14px 0;}
 .scroll-list{max-height:340px;overflow-y:auto;}
+/* ── Owner panel on a computer: sidebar tabs + two-column pages. Phones keep the single column. ── */
+@media(min-width:1024px){
+  #screen-owner:has(#owner-panel-wrap[style*="block"]){max-width:none;box-shadow:none;}
+  #owner-panel-wrap[style*="block"]{display:grid!important;grid-template-columns:200px minmax(0,1fr);grid-template-rows:auto 1fr;min-height:100vh;}
+  #owner-panel-wrap>*{grid-column:2;}
+  #owner-panel-wrap>.top-bar{grid-column:1/-1;grid-row:1;padding:14px 28px;}
+  #owner-panel-wrap>.page{grid-row:2;align-self:start;padding:22px 28px 40px;max-width:1440px;width:100%;}
+  #owner-panel-wrap .stat-grid{grid-template-columns:repeat(3,minmax(0,1fr));}
+  #owner-tabs{grid-column:1;grid-row:2;flex-direction:column;align-self:start;position:sticky;top:64px;padding:22px 12px;gap:4px;overflow:visible;}
+  #owner-tabs .tab{text-align:left;border:none;border-radius:10px;padding:11px 14px;font-size:14px;}
+  #owner-tabs .tab:not(.active):hover{background:var(--s3);color:var(--text);}
+  .pc-cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px;align-items:start;}
+  .pc-cols>.pc-col>:last-child{margin-bottom:0;}
+  .pc-reports{grid-template-columns:minmax(0,5fr) minmax(0,6fr);}
+  .pc-staff{grid-template-columns:minmax(0,2fr) minmax(0,3fr);}
+  .pc-sticky{position:sticky;top:84px;}
+  #report-log{max-height:calc(100vh - 250px)!important;}
+  #owner-payroll .scroll-list{max-height:60vh;}
+  .today-rows{display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));column-gap:28px;}
+  .today-rows .att-row:last-child{border-bottom:1px solid var(--border);}
+  #owner-fix #fix-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(440px,1fr));gap:0 14px;align-items:start;}
+  #owner-fix #fix-list>.empty-state{grid-column:1/-1;}
+  #owner-inbox #inbox-content{max-width:960px;}
+  #owner-settings.active{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 20px;align-items:start;}
+  #owner-settings>p{grid-column:1/-1;}
+  #staff-list-display,#staff-inactive-display{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;}
+  #staff-list-display>.staff-quick-card,#staff-inactive-display>.staff-quick-card{margin-bottom:0;}
+}
 .empty-state{text-align:center;padding:32px 16px;color:var(--muted);font-size:13px;}
 .empty-state .emoji{font-size:36px;margin-bottom:10px;}
 .qr-box{background:#fff;border-radius:var(--r);padding:18px;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;width:fit-content;}
@@ -4363,7 +4392,7 @@ textarea.form-input{resize:none;}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.22.9</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.23.0</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -4618,6 +4647,7 @@ textarea.form-input{resize:none;}
     </div>
     <!-- REPORTS -->
     <div class="page" id="owner-reports">
+      <div class="pc-cols pc-reports"><div class="pc-col">
       <div class="card">
         <div class="card-title">Filter</div>
         <div class="form-group" style="margin-bottom:0;"><label class="form-label">Staff</label>
@@ -4637,6 +4667,7 @@ textarea.form-input{resize:none;}
         </div>
         <p style="font-size:11px;color:var(--muted);margin-top:8px;">🟠 Orange dot (right) = late arrival &nbsp;·&nbsp; 🟣 Purple dot (left) = worked less than standard hours</p>
       </div>
+      </div><div class="pc-col pc-sticky">
       <div class="card"><div class="card-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">Log<span id="report-missing-count"></span></div>
         <div class="scroll-list" id="report-log" style="max-height:70vh;"></div>
         <div style="display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
@@ -4644,6 +4675,7 @@ textarea.form-input{resize:none;}
           <button class="btn btn-ghost btn-sm" onclick="exportAttendancePDF()" style="flex:1;">🖨️ Print / PDF</button>
         </div>
       </div>
+      </div></div>
     </div>
     <!-- FIX ATTENDANCE -->
     <div class="page" id="owner-fix">
@@ -4675,6 +4707,7 @@ textarea.form-input{resize:none;}
         <div id="pay-month-badge" class="pay-month-badge" style="display:none;"></div>
       </div>
       <div id="payroll-output" style="display:none;">
+        <div class="pc-cols"><div class="pc-col">
         <div class="pay-hero">
           <div class="pay-amount" id="pay-net-amount">₹0</div>
           <div class="pay-lbl">Net Payable · <span id="pay-hero-month"></span></div>
@@ -4701,6 +4734,7 @@ textarea.form-input{resize:none;}
             <div style="font-size:12px;font-weight:600;margin-top:6px;" id="pb-adv-carry"></div>
           </div>
         </div>
+        </div><div class="pc-col">
         <div class="card">
           <div class="card-title">③ Salary Breakdown</div>
           <div class="pay-section">Earnings</div>
@@ -4733,9 +4767,12 @@ textarea.form-input{resize:none;}
             <button class="btn btn-secondary" onclick="printSalarySlip()" style="width:auto;padding:14px 18px;">🖨️ Slip</button>
           </div>
         </div>
+        </div></div>
       </div>
+      <div class="pc-cols"><div class="pc-col">
       <div class="card"><div class="card-title" id="pay-history-title">Payment History</div><div class="scroll-list" id="pay-history-list"><p style="color:var(--muted);font-size:13px;">No payments yet</p></div></div>
       <!-- Advance tracker -->
+      </div><div class="pc-col">
       <div class="card"><details id="adv-details">
         <summary class="card-title" style="cursor:pointer;margin-bottom:0;">💸 Advances <span style="text-transform:none;letter-spacing:0;font-weight:400;">· give an advance, see all advances · tap to open</span></summary>
         <div style="margin-top:14px;">
@@ -4749,9 +4786,11 @@ textarea.form-input{resize:none;}
         <div style="margin-top:14px;" id="adv-list"></div>
         </div>
       </details></div>
+      </div></div>
     </div>
     <!-- STAFF -->
     <div class="page" id="owner-staff">
+      <div class="pc-cols pc-staff"><div class="pc-col">
       <div class="card">
         <div class="card-title">Add New Staff</div>
         <div class="form-group"><label class="form-label">Full Name</label><input class="form-input" id="ns-name" placeholder="e.g. Ramesh Kumar"></div>
@@ -4762,11 +4801,13 @@ textarea.form-input{resize:none;}
         <div class="form-group"><label class="form-label">Joining Date</label><input type="date" class="form-input" id="ns-joining"></div>
         <button class="btn btn-primary" onclick="addStaff()">+ Add Staff</button>
       </div>
+      </div><div class="pc-col">
       <div class="card"><div class="card-title">Staff Members</div><div id="staff-list-display"></div></div>
       <div class="card" id="staff-inactive-card" style="display:none;"><details>
         <summary class="card-title" style="cursor:pointer;margin-bottom:0;">Inactive Staff (<span id="staff-inactive-count">0</span>) <span style="text-transform:none;letter-spacing:0;font-weight:400;">· tap to show</span></summary>
         <div id="staff-inactive-display" style="margin-top:12px;"></div>
       </details></div>
+      </div></div>
     </div>
     <!-- SETTINGS -->
     <div class="page" id="owner-settings">
@@ -5351,7 +5392,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.22.9</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.23.0</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -5359,11 +5400,24 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.23.0 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.23.0</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Owner panel on a computer now uses the full screen: tabs in a left sidebar, pages in two columns</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll: inputs on the left, breakdown and Pay button on the right — no scrolling</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Reports: calendar and stats on the left, log on the right; Staff, Settings, Today and Fix spread out too</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Phone layout unchanged</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.22.9 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.22.9</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.22.9</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll page in salary-day order: ① Attendance → ② Incentive &amp; Advance → ③ Salary Breakdown → ④ Pay &amp; Record</span></div>
