@@ -23,3 +23,9 @@
 - Easier AM/PM reading in time lists (e.g. "9:13 pm" vs "9:13 am").
 - Optional: advances report per staff per month.
 - SR Shoes sent a second email about an issue — owner will forward it.
+
+## Postponed (owner said later — don't start without asking)
+- PC-only screens (shared logic, phone layout untouched): 1) Payroll salary
+  sheet — all staff in one table, incentive inline, Apply, mark paid per row;
+  2) Reports monthly grid staff × days; 3) Fix as a table; 4) Inbox
+  list + detail side by side; 5) Today as a live board. Start with 1, then 2.
