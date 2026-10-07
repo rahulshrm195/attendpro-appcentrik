@@ -50,7 +50,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.25.8';
+const APP_VERSION = 'v1.25.9';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -2915,19 +2915,23 @@ window.deleteAdvance=async function(id,staffId,amount){
 window.addStaff=async function(){
   const name=v('ns-name'),user=v('ns-user').toLowerCase(),pin=v('ns-pin');
   const joining=document.getElementById('ns-joining').value||new Date().toISOString().split('T')[0];
+  const emEl=document.getElementById('ns-email'),email=emEl?emEl.value.trim().toLowerCase():'';
   if(!name)return toast('Enter full name',true);
+  if(email&&!validEmail(email))return toast('Email looks wrong — check it or leave it empty',true);
   if(!user)return toast('Enter username',true);
   if(staffArr.find(s=>s.username===user))return toast('Username already taken',true);
   if(!pin||pin.length!==4||isNaN(pin))return toast('PIN must be 4 digits',true);
   setLoading(true,'Adding staff…');
   try{
-    const id=await fbAdd(p.staff(),{name,username:user,pin,active:true,joiningDate:joining});
-    staffArr.push({id,name,username:user,pin,active:true,joiningDate:joining});
+    const rec={name,username:user,pin,active:true,joiningDate:joining};if(email)rec.email=email;
+    const id=await fbAdd(p.staff(),rec);
+    staffArr.push({id,...rec});
     ls.set('ap_staff_cache',staffArr);
     document.getElementById('ns-name').value='';
     document.getElementById('ns-user').value='';
     document.getElementById('ns-pin').value='';
     document.getElementById('ns-joining').value='';
+    if(emEl)emEl.value='';
     renderStaffList();populateDropdowns();toast('✓ '+name+' added');
   }catch(e){toast('Error: '+e.message,true);}
   setLoading(false);
@@ -2946,6 +2950,7 @@ function renderStaffList(){
           <div>
             <div style="font-weight:700;font-size:15px;">${s.name}</div>
             <div style="font-size:12px;color:var(--muted);">@${s.username} · Joined: ${s.joiningDate||'—'}</div>
+            <div style="font-size:12px;color:var(--muted);">${s.email?'✉️ '+ksEsc(s.email):'No email'}</div>
           </div>
         </div>
         <span class="${s.active?'status-approved':'status-rejected'}">${s.active?'Active':'Inactive'}</span>
@@ -2955,6 +2960,7 @@ function renderStaffList(){
         <button class="btn btn-ghost btn-xs" onclick="editPin('${s.id}')">Change PIN</button>
         <button class="btn btn-ghost btn-xs" onclick="editStaffName('${s.id}')">✏️ Rename</button>
         <button class="btn btn-ghost btn-xs" onclick="editJoiningDate('${s.id}')">📅 Joining</button>
+        <button class="btn btn-ghost btn-xs" onclick="editStaffEmail('${s.id}')">✉️ Email</button>
         <button class="btn btn-ghost btn-xs" onclick="toggleStaff('${s.id}')">${s.active?'Disable':'Enable'}</button>
         <button class="btn btn-ghost btn-xs" style="color:var(--red);" onclick="deleteStaff('${s.id}','${s.name}')">🗑️</button>
       </div>
@@ -2989,6 +2995,21 @@ window.editJoiningDate=async function(id){
     s.joiningDate=d.trim();ls.set('ap_staff_cache',staffArr);
     renderStaffList();toast('✓ Joining date updated');
   }catch(e){toast('Error: '+e.message,true);}
+};
+function validEmail(e){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);}
+// Returns the saved email, or null if cancelled
+window.editStaffEmail=async function(id){
+  const s=staffArr.find(x=>x.id===id);if(!s)return null;
+  const e=prompt('Email for '+s.name+' (salary slips are sent here).\nLeave empty to remove.',s.email||'');
+  if(e===null)return null;
+  const em=e.trim().toLowerCase();
+  if(em&&!validEmail(em)){toast('Email looks wrong — please check it',true);return null;}
+  try{
+    await updateDoc(doc(db,p.staffDoc(id)),{email:em});
+    s.email=em;ls.set('ap_staff_cache',staffArr);
+    renderStaffList();toast(em?'✓ Email saved':'Email removed');
+    return em;
+  }catch(e){toast('Error: '+e.message,true);return null;}
 };
 window.deleteStaff=async function(id,name){
   if(!confirm(`Delete ${name}? This cannot be undone. Their attendance records will remain.`))return;
@@ -4058,6 +4079,50 @@ window.ksSubmitLeave=async function(){
 // ─────────────────────────────────────────────
 //  SALARY SLIP PRINT
 // ─────────────────────────────────────────────
+// Opens the owner's mail app with the slip written out in the email.
+// Uses the same numbers shown on screen (renderPayroll), like the printed slip.
+window.emailSalarySlip=async function(){
+  const sid=v('pay-staff-sel'),mv=v('pay-month');
+  if(!sid||!mv)return toast('Select staff and month first',true);
+  const staff=staffArr.find(s=>s.id===sid);if(!staff)return;
+  let to=staff.email;
+  if(!to){
+    if(!confirm('No email saved for '+staff.name+'. Add it now?'))return;
+    to=await editStaffEmail(sid);if(!to)return;
+  }
+  const g=id=>{const el=document.getElementById(id);return el?el.textContent.trim():'';};
+  const vis=id=>{const el=document.getElementById(id);return el&&el.style.display!=='none';};
+  const ml=new Date(parseInt(mv.split('-')[0]),parseInt(mv.split('-')[1])-1,1).toLocaleString('en-IN',{month:'long',year:'numeric'});
+  let payRec=null;try{payRec=await fbGet(p.payment(sid,mv));}catch(e){}
+  const cfg=getSalaryCfg._cache&&getSalaryCfg._cache[sid];
+  const L=[];const row=(a,b)=>L.push(a+': '+b);
+  L.push('Dear '+staff.name+',','','Your salary slip for '+ml+' from '+(biz.name||'')+'.','');
+  if(cfg)L.push('Duty '+dutyText(cfg)+' · paid on '+(cfg.standardHours||calcAutoStdHoursFromCfg(cfg))+'h/day','');
+  row(g('pb-base-lbl'),g('pb-base'));
+  row(g('pb-ot-lbl'),g('pb-ot'));
+  row('Sales Incentive',g('pb-incentive'));
+  if(vis('pb-woff-row'))row(g('pb-woff-lbl'),g('pb-woff-bonus'));
+  if(vis('pb-wopay-row'))row(g('pb-wopay-lbl'),g('pb-wopay'));
+  if(vis('pb-holiday-row'))row(g('pb-holiday-lbl'),g('pb-holiday'));
+  if(vis('pb-paidleave-row'))row(g('pb-paidleave-lbl'),g('pb-paidleave'));
+  row(g('pb-late-lbl'),g('pb-late'));
+  L.push('------------------------------');
+  row('GROSS SALARY',g('pb-gross'));
+  row('Advance recovered',g('pb-advance'));
+  const out=document.getElementById('payroll-output'),owed=parseInt(out&&out.dataset.totalOutstanding)||0,left=parseInt(out&&out.dataset.advCarryFwd)||0;
+  if(owed>0)row('Advance still owed after this month','\u20b9'+left.toLocaleString('en-IN'));
+  L.push('------------------------------');
+  row('NET PAYABLE',g('pb-net'));
+  L.push('');
+  if(vis('pb-short-row'))L.push(g('pb-short-lbl'));
+  L.push(g('pb-absent-lbl'));
+  if(payRec)L.push('','PAID on '+payRec.date+' by '+({cash:'Cash',upi:'UPI',bank:'Bank transfer'}[payRec.mode]||payRec.mode)+(payRec.note?' ('+payRec.note+')':''));
+  else L.push('','Not paid yet.');
+  L.push('','If anything looks wrong, please tell us.','',biz.name||'');
+  const subject='Salary slip — '+ml+' — '+(biz.name||'');
+  window.openMailto('mailto:'+encodeURIComponent(to).replace('%40','@')+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(L.join('\n')));
+};
+window.openMailto=function(url){location.href=url;};
 window.printSalarySlip=function(){
   const sid=v('pay-staff-sel'),mv=v('pay-month');
   if(!sid||!mv)return toast('Select staff and month first',true);
@@ -4743,7 +4808,7 @@ function dkDetail(focusKey){
     ${L('Gross',dkInr(C.netBeforeAdv),'tot')}${L('Advance recovered','−'+dkInr(C.advActual))}${C.totalOutstanding>0?L('Advance still owed after this month',dkInr(C.advCarryFwd),C.advCarryFwd>0?'dk-acc':''):''}</div>
     <div class="dk-net"><span>Net pay${x.changed?' (before your change)':''}</span><b>${dkInr(C.net)}</b></div></div>
   <div class="dk-sec"><h4>Pay</h4>${x.pay?'':`<div class="dk-f2"><div class="dk-field"><label for="dk-pm">Paid by</label><select id="dk-pm" class="dk-inp"><option value="cash">💵 Cash</option><option value="upi">📱 UPI / GPay</option><option value="bank">🏦 Bank transfer</option></select></div><div class="dk-field"><label for="dk-pn">Note</label><input id="dk-pn" class="dk-inp" placeholder="e.g. UPI ref 1234"></div></div>`}
-    <div class="dk-row">${x.pay?`<button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Slip (PAID)</button>${paidAmt!==C.net?`<button class="dk-btn pri" onclick="deskPay('${ksEsc(s.id)}',true)">Update payment to ${dkInr(C.net)}</button>`:''}`:`<button class="dk-btn pri" ${x.changed||cur?'disabled':''} onclick="deskPay('${ksEsc(s.id)}')">✓ Mark ${dkInr(C.net)} paid</button><button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Preview slip</button>`}<button class="dk-btn" onclick="deskStatement('${ksEsc(s.id)}')">📄 Day-by-day</button></div>
+    <div class="dk-row">${x.pay?`<button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Slip (PAID)</button>${paidAmt!==C.net?`<button class="dk-btn pri" onclick="deskPay('${ksEsc(s.id)}',true)">Update payment to ${dkInr(C.net)}</button>`:''}`:`<button class="dk-btn pri" ${x.changed||cur?'disabled':''} onclick="deskPay('${ksEsc(s.id)}')">✓ Mark ${dkInr(C.net)} paid</button><button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Preview slip</button>`}<button class="dk-btn" onclick="deskStatement('${ksEsc(s.id)}')">📄 Day-by-day</button><button class="dk-btn" onclick="deskEmailSlip('${ksEsc(s.id)}')" title="${s.email?ksEsc(s.email):'No email saved'}">✉️ Email slip</button></div>
     ${x.changed?'<span class="dk-acc" style="font-size:12px;font-weight:600">Apply or Save all first — the amounts above don\'t include your change yet.</span>':cur&&!x.pay?'<span class="dk-mute" style="font-size:12px">Pay after the month ends.</span>':''}</div>`;
   if(focusKey){const el=dkEl(focusKey==='inc'?'dk-dinc':'dk-dadv');if(el&&document.activeElement&&document.activeElement.closest&&!document.activeElement.closest('#dk-det')){/* typed in the table: leave focus there */}
     else if(el){el.focus();const v=el.value;el.value='';el.value=v;}}
@@ -4766,6 +4831,8 @@ window.deskPayPicked=function(){const list=[...DK.pick].map(id=>(DK.payRows||[])
 // The slip comes from the classic Payroll tab (same layout and PAID stamp)
 window.deskSlip=async function(sid){if(!sid)return;await populatePayrollDropdowns();const sel=dkEl('pay-staff-sel');if(![...sel.options].some(o=>o.value===sid)){toast('No salary to show for '+dkName(sid),true);return;}
   sel.value=sid;dkEl('pay-month').value=DK.mv;payCtxKey='';await renderPayroll();printSalarySlip();};
+window.deskEmailSlip=async function(sid){if(!sid)return;await populatePayrollDropdowns();const sel=dkEl('pay-staff-sel');if(![...sel.options].some(o=>o.value===sid)){toast('No salary to show for '+dkName(sid),true);return;}
+  sel.value=sid;dkEl('pay-month').value=DK.mv;payCtxKey='';await renderPayroll();await emailSalarySlip();};
 
 // ── Advances ──
 async function dkAdv(){
@@ -4791,18 +4858,19 @@ async function dkStaff(){
   ${L.map((s,i)=>{const c=cfgs[i]||{},b=leds[i]&&leds[i].balance>0?leds[i].balance:0;return `<tr class="k" onclick="deskStaffOpen('${ksEsc(s.id)}')"><td><div class="dk-who">${dkAv(s.id)}<b>${ksEsc(s.name)}</b></div></td><td class="dk-mute">@${ksEsc(s.username||'')}</td><td>${ksEsc(s.joiningDate||'—')}</td><td class="r">${c.base?dkInr(c.base):'<span class="dk-bad">not set</span>'}</td><td>${ksEsc(dutyText(c))}<div class="dk-mute" style="font-size:11.5px">paid on ${c.standardHours||calcAutoStdHoursFromCfg(c)}h/day</div></td><td>${c.weeklyOff>=0?DOW_SHORT[c.weeklyOff]:'—'}</td><td class="r">${b?'<span class="dk-acc">'+dkInr(b)+'</span>':'—'}</td><td class="r"><button class="dk-btn sm">Open</button></td></tr>`;}).join('')||'<tr><td colspan="8" class="dk-empty">Nobody here</td></tr>'}</tbody></table></div></div>`;
 }
 window.deskStaffOpen=function(sid){const s=staffArr.find(x=>x.id===sid);if(!s)return;const q=`'${ksEsc(s.id)}'`;
-  dkModal(`<header>${dkAv(s.id)}<div class="dk-sp"><h3>${ksEsc(s.name)}</h3><div class="dk-mute">@${ksEsc(s.username||'')} · joined ${ksEsc(s.joiningDate||'—')} · ${s.active?'Active':'Inactive'}</div></div><button class="dk-xb" onclick="dkCloseModal()" aria-label="Close">×</button></header>
+  dkModal(`<header>${dkAv(s.id)}<div class="dk-sp"><h3>${ksEsc(s.name)}</h3><div class="dk-mute">@${ksEsc(s.username||'')} · joined ${ksEsc(s.joiningDate||'—')} · ${s.active?'Active':'Inactive'}</div><div class="dk-mute">${s.email?'✉️ '+ksEsc(s.email):'No email saved'}</div></div><button class="dk-xb" onclick="dkCloseModal()" aria-label="Close">×</button></header>
   <div class="bd"><div class="dk-grid2">
     <button class="dk-btn" onclick="dkCloseModal();openSalarySettings(${q})">₹ Salary & shift settings</button><button class="dk-btn" onclick="dkCloseModal();editPin(${q})">Change PIN</button>
     <button class="dk-btn" onclick="dkCloseModal();editStaffName(${q})">✏️ Rename</button><button class="dk-btn" onclick="dkCloseModal();editJoiningDate(${q})">📅 Joining date</button>
+    <button class="dk-btn" onclick="dkCloseModal();editStaffEmail(${q})">✉️ ${s.email?'Change email':'Add email'}</button>
     <button class="dk-btn" onclick="dkCloseModal();deskGo('payroll',{sel:${q}})">See payroll</button><button class="dk-btn" onclick="dkCloseModal();DK.advSel=${q};deskGo('advances')">See advances</button></div></div>
   <footer><button class="dk-btn ${s.active?'red':''}" onclick="dkCloseModal();toggleStaff(${q})">${s.active?'Disable':'Enable'}</button><button class="dk-btn red" onclick="dkCloseModal();deleteStaff(${q},'${ksEsc(s.name).replace(/'/g,'&#39;')}')">🗑️ Delete</button><span class="dk-sp"></span><button class="dk-btn" onclick="dkCloseModal()">Close</button></footer>`);};
 window.deskAddStaff=function(){dkModal(`<header><div class="dk-sp"><h3>Add staff</h3></div><button class="dk-xb" onclick="dkCloseModal()" aria-label="Close">×</button></header>
   <div class="bd"><div class="dk-field"><label for="dk-an">Full name</label><input id="dk-an" class="dk-inp" placeholder="e.g. Ramesh Kumar"></div>
   <div class="dk-f2"><div class="dk-field"><label for="dk-au">Username</label><input id="dk-au" class="dk-inp" autocapitalize="off" placeholder="ramesh"></div><div class="dk-field"><label for="dk-ap">4-digit PIN</label><input id="dk-ap" class="dk-inp" type="tel" maxlength="4" placeholder="1234"></div></div>
-  <div class="dk-field"><label for="dk-aj">Joining date</label><input id="dk-aj" class="dk-inp" type="date" value="${todayStr()}"></div><span class="dk-mute" style="font-size:12px">Set salary and shift after adding (Open → Salary & shift settings).</span></div>
+  <div class="dk-f2"><div class="dk-field"><label for="dk-aj">Joining date</label><input id="dk-aj" class="dk-inp" type="date" value="${todayStr()}"></div><div class="dk-field"><label for="dk-ae">Email (optional)</label><input id="dk-ae" class="dk-inp" type="email" autocapitalize="off" placeholder="name@gmail.com"></div></div><span class="dk-mute" style="font-size:12px">Set salary and shift after adding (Open → Salary & shift settings).</span></div>
   <footer><button class="dk-btn pri" id="dk-ago">＋ Add staff</button><button class="dk-btn" onclick="dkCloseModal()">Cancel</button></footer>`);
-  dkEl('dk-ago').onclick=async()=>{dkEl('ns-name').value=dkEl('dk-an').value;dkEl('ns-user').value=dkEl('dk-au').value;dkEl('ns-pin').value=dkEl('dk-ap').value;dkEl('ns-joining').value=dkEl('dk-aj').value;
+  dkEl('dk-ago').onclick=async()=>{dkEl('ns-name').value=dkEl('dk-an').value;dkEl('ns-user').value=dkEl('dk-au').value;dkEl('ns-pin').value=dkEl('dk-ap').value;dkEl('ns-joining').value=dkEl('dk-aj').value;dkEl('ns-email').value=dkEl('dk-ae').value;
     const before=staffArr.length;await addStaff();if(staffArr.length>before){dkCloseModal();deskRender(true);}};};
 
 
@@ -5507,7 +5575,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.8</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.9</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -5887,6 +5955,7 @@ body.dk-body .sheet{border-radius:20px}
             <button class="btn btn-primary" id="pay-mark-btn" onclick="markAsPaid()">✓ Mark as Paid</button>
             <button class="btn btn-secondary" onclick="printSalarySlip()" style="width:auto;padding:14px 18px;">🖨️ Slip</button>
           </div>
+          <button class="btn btn-ghost" onclick="emailSalarySlip()" style="margin-top:10px;">✉️ Email slip to staff</button>
           <button class="btn btn-ghost" onclick="printPayStatement()" style="margin-top:10px;">📄 Day-by-day statement (to check with staff)</button>
         </div>
         </div></div>
@@ -5921,6 +5990,7 @@ body.dk-body .sheet{border-radius:20px}
           <div class="form-group"><label class="form-label">4-Digit PIN</label><input class="form-input" id="ns-pin" type="tel" placeholder="1234" maxlength="4"></div>
         </div>
         <div class="form-group"><label class="form-label">Joining Date</label><input type="date" class="form-input" id="ns-joining"></div>
+        <div class="form-group"><label class="form-label">Email (optional — for salary slips)</label><input type="email" class="form-input" id="ns-email" autocapitalize="off" placeholder="name@gmail.com"></div>
         <button class="btn btn-primary" onclick="addStaff()">+ Add Staff</button>
       </div>
       </div><div class="pc-col">
@@ -6524,7 +6594,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.8</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.9</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6532,11 +6602,22 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.25.9 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.9</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Staff email: add it when adding staff, or with the ✉️ Email button on each staff member</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>✉️ Email slip in Payroll: opens your mail app with the full salary slip written in the email, addressed to the staff member — check and press Send</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.25.8 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.8</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.25.8</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Faster opening: the app opens straight away from the copy saved on this device and refreshes in the background — no more blank screen while the internet is slow (owner, staff phones and shop kiosk)</span></div>
