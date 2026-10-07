@@ -11,9 +11,12 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
 <title>AttendPro — Staff Management</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://firestore.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 
 <!-- ═══════════════════════════════════════════════════════
      FIREBASE CONFIG — PASTE YOUR CONFIG HERE
@@ -47,7 +50,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.25.7';
+const APP_VERSION = 'v1.25.8';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -298,18 +301,22 @@ async function boot(){
       ksBizId=kData.bizId;
       // Try to reload fresh data, fall back to cache
       BIZ_ID=ksBizId;
-      setLoading(true,'Loading kiosk…');
-      try{
-        ksBiz=await fbGet(p.biz()).catch(function(){return null;});
+      // Fetch all three together; with a saved copy on this phone, open from it at once
+      var ksFresh=Promise.all([fbGet(p.biz()).catch(function(){return null;}),fbGet(p.settings()).catch(function(){return null;}),fbList(p.staff()).catch(function(){return [];})]).then(function(r){
+        if(r[0]){ksBiz=r[0];ls.set('ap_kiosk_biz_cache',ksBiz);var nm=document.getElementById('kiosk-biz-name');if(nm)nm.textContent=ksBiz.name||'';}
+        if(r[1]){ksSettings=r[1];ls.set('ap_kiosk_settings_cache',ksSettings);}
+        if(r[2].length){ksStaffArr=r[2];ls.set('ap_kiosk_staff_cache',ksStaffArr);}
+      });
+      var ksCached=ls.get('ap_kiosk_biz_cache',null),ksCachedStaff=ls.get('ap_kiosk_staff_cache',[]);
+      if(ksCached&&ksCachedStaff.length){
+        ksBiz=ksCached;ksStaffArr=ksCachedStaff;ksSettings=ls.get('ap_kiosk_settings_cache',{punchInTime:'10:00'});
+        ksFresh.catch(function(){});
+      } else try{
+        setLoading(true,'Loading kiosk…');
+        await ksFresh;
         if(!ksBiz)ksBiz=ls.get('ap_kiosk_biz_cache');
-        var sett=await fbGet(p.settings()).catch(function(){return null;});
-        ksSettings=sett||ls.get('ap_kiosk_settings_cache',{punchInTime:'10:00'});
-        ksStaffArr=await fbList(p.staff()).catch(function(){return [];});
-        if(!ksStaffArr.length)ksStaffArr=ls.get('ap_kiosk_staff_cache',[]);
-        // Refresh caches
-        if(ksBiz)ls.set('ap_kiosk_biz_cache',ksBiz);
-        if(ksStaffArr.length)ls.set('ap_kiosk_staff_cache',ksStaffArr);
-        ls.set('ap_kiosk_settings_cache',ksSettings);
+        if(!ksSettings||!Object.keys(ksSettings).length)ksSettings=ls.get('ap_kiosk_settings_cache',{punchInTime:'10:00'});
+        if(!ksStaffArr||!ksStaffArr.length)ksStaffArr=ls.get('ap_kiosk_staff_cache',[]);
       }catch(e){
         ksBiz=ls.get('ap_kiosk_biz_cache');
         ksSettings=ls.get('ap_kiosk_settings_cache',{punchInTime:'10:00'});
@@ -331,24 +338,41 @@ async function boot(){
 
   // If we have a cached BIZ_ID, load directly
   if(BIZ_ID){
-    setLoading(true,'Loading…');
-    try {
-      biz = await fbGet(p.biz());
-      if(!biz){ localStorage.removeItem('ap_biz_id'); setLoading(false); showScreen('screen-landing'); return; }
-      const sett = await fbGet(p.settings());
-      if(sett) settings = sett;
-      staffArr = await fbList(p.staff());
-      ls.set('ap_biz_cache',biz);
-      ls.set('ap_staff_cache',staffArr);
-      ls.set('ap_settings_cache',settings);
-    } catch(e){
-      biz = ls.get('ap_biz_cache');
-      staffArr = ls.get('ap_staff_cache',[]);
-      settings = ls.get('ap_settings_cache',{punchInTime:'10:00'});
-      if(!biz){ showScreen('screen-landing'); setLoading(false); return; }
-      toast('⚠️ Offline mode — cached data');
+    // Business, settings and staff are fetched together. If this device already
+    // has them saved for this business, the app opens from that copy at once and
+    // the fresh copy replaces it in the background.
+    const bootBiz=BIZ_ID;
+    const fresh=Promise.all([fbGet(p.biz()),fbGet(p.settings()),fbList(p.staff())]).then(([b,sett,st])=>{
+      if(b&&BIZ_ID===bootBiz){
+        biz=b;if(sett)settings=sett;staffArr=st;
+        ls.set('ap_biz_cache',biz);ls.set('ap_staff_cache',staffArr);ls.set('ap_settings_cache',settings);ls.set('ap_cache_biz',bootBiz);
+      }
+      return b;
+    });
+    const cachedBiz=ls.get('ap_cache_biz',null)===bootBiz?ls.get('ap_biz_cache',null):null;
+    if(cachedBiz){
+      biz=cachedBiz;
+      staffArr=ls.get('ap_staff_cache',[]);
+      settings=ls.get('ap_settings_cache',{punchInTime:'10:00'});
+      fresh.then(b=>{
+        if(BIZ_ID!==bootBiz)return;
+        if(!b){localStorage.removeItem('ap_biz_id');localStorage.removeItem('ap_cache_biz');location.reload();return;}
+        bootRefreshed();
+      }).catch(()=>{});
+    } else {
+      setLoading(true,'Loading…');
+      try {
+        const b=await fresh;
+        if(!b){ localStorage.removeItem('ap_biz_id'); setLoading(false); showScreen('screen-landing'); return; }
+      } catch(e){
+        biz = ls.get('ap_biz_cache');
+        staffArr = ls.get('ap_staff_cache',[]);
+        settings = ls.get('ap_settings_cache',{punchInTime:'10:00'});
+        if(!biz){ showScreen('screen-landing'); setLoading(false); return; }
+        toast('⚠️ Offline mode — cached data');
+      }
+      setLoading(false);
     }
-    setLoading(false);
     // Restore owner session if they were logged in before reload
     if(localStorage.getItem('ap_owner_session')==='1'){
       showScreen('screen-owner');
@@ -383,6 +407,22 @@ async function boot(){
 
   // No BIZ_ID — new device, show landing
   showScreen('screen-landing');
+}
+
+// After the app opened from the saved copy: show the fresh business, settings and staff.
+function bootRefreshed(){
+  const t=document.getElementById('owner-biz-title');if(t&&biz)t.textContent=biz.name;
+  const lb=document.getElementById('login-biz-name');if(lb&&biz)lb.textContent=biz.name;
+  if(localStorage.getItem('ap_owner_session')==='1'){
+    try{populateDropdowns();}catch(e){}
+    deskPing();
+    return;
+  }
+  if(currentStaff){
+    const s=staffArr.find(x=>x.id===currentStaff.id);
+    if(!s||!s.active){localStorage.removeItem('ap_session');location.reload();return;}
+    Object.assign(currentStaff,s);
+  }
 }
 
 function hideSplash(){
@@ -5467,7 +5507,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.7</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.8</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6484,7 +6524,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.7</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.8</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6492,11 +6532,22 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.25.8 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.8</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Faster opening: the app opens straight away from the copy saved on this device and refreshes in the background — no more blank screen while the internet is slow (owner, staff phones and shop kiosk)</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>On a very slow connection the saved app opens after 4 seconds instead of waiting for the full download</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.25.7 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.7</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.25.7</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Salary slip: new line "Advance still owed after this month" under Advance Recovered, with the total owed — shown on the preview and the PAID slip</span></div>
