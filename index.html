@@ -47,7 +47,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.25.2';
+const APP_VERSION = 'v1.25.3';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -2087,6 +2087,92 @@ window.shrinkStoredSelfies=async function(){
   btn.disabled=false;
 };
 
+
+// ── Day-by-day salary statement ──
+// Shows every day of the month and what it added, so an employee can check the salary line by line.
+// Built only from computePayroll() output — the totals are the same numbers as the Payroll tab and slip.
+function payStatementHtml(C,mv){
+  const st=C.staff,cfg=C.cfg,E=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const rs=n=>'₹'+(Math.round(n*100)/100).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const r0=n=>'₹'+Math.round(n||0).toLocaleString('en-IN');
+  const hm=m=>{m=Math.max(0,Math.round(m||0));return Math.floor(m/60)+'h '+String(m%60).padStart(2,'0')+'m';};
+  const ml=new Date(C.year,C.month,1).toLocaleString('en-IN',{month:'long',year:'numeric'});
+  const DW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const perMin=C.stdMins>0?C.perDay/C.stdMins:0,hourly=perMin*60;
+  const punches=r=>{if(!r)return '—';const ss=r.sessions&&r.sessions.length?r.sessions:[r];return ss.map(x=>E(x.inTime||'?')+' → '+(x.outTime?E(x.outTime):'<i>no punch-out</i>')).join('<br>');};
+  let sumBase=0,sumOT=0,sumWO=0,sumWOB=0,sumHol=0,sumLv=0,mismatch=0;
+  const rows=C.dayLog.map(d=>{
+    const dt=new Date(d.ds+'T00:00:00'),date=dt.getDate()+' '+dt.toLocaleString('en-IN',{month:'short'})+' · '+DW[d.dow];
+    let status='',worked='—',paid='—',extra='—',amt=0,note='';
+    const flagMis=d.rec&&d.punch!=null&&d.mins!=null&&Math.abs(d.punch-d.mins)>1;
+    if(flagMis){mismatch++;note='Punch times add up to '+hm(d.punch)+' but '+hm(d.mins)+' is saved for this day — check this day.';}
+    if(d.kind==='work'){status=d.late?'Present · late':'Present';worked=hm(d.mins);paid=hm(d.base);
+      const b=d.base*perMin,o=d.ot/60*C.otRatePerHour;sumBase+=b;sumOT+=o;amt=b+o;
+      if(d.ot)extra='+'+hm(d.ot)+' OT = '+rs(o);else if(d.base<C.stdMins)extra='<span class="neg">'+hm(C.stdMins-d.base)+' short</span>';
+      if(d.partLeave){status+=' · '+(d.partLeave.leaveType==='half'?'half-day':'part-day')+' leave';if(d.partLeave.paidLeave&&d.partLeave.leaveType==='half'){const lv=C.perDay/2;sumLv+=lv;amt+=lv;note=(note?note+' ':'')+'Paid half-day leave +'+rs(lv)+'.';}}}
+    else if(d.kind==='wo'){status='Weekly off'+(d.mins?' · worked':'');worked=d.mins?hm(d.mins):'—';
+      const w=C.woPaid?C.perDay:0,wb=d.mins&&C.stdMins?d.mins/C.stdMins*C.perDay:0;sumWO+=w;sumWOB+=wb;amt=w+wb;paid=C.woPaid?'1 day':'unpaid';if(wb)extra='+'+rs(wb)+' for working';}
+    else if(d.kind==='hol'){status='Holiday'+(d.note?' · '+E(d.note):'');const h=d.paid?C.perDay:0;sumHol+=h;amt=h;paid=d.paid?'1 day':'unpaid';if(d.rec)note=(note?note+' ':'')+'Punches on a holiday are not counted (the holiday is paid instead).';}
+    else if(d.kind==='leave'){status='Leave'+(d.note?' · '+E(d.note):'');const l=d.paid?C.perDay:0;sumLv+=l;amt=l;paid=d.paid?'1 day (paid)':'unpaid';}
+    else if(d.kind==='tooShort'){status='Counted absent';worked=hm(d.mins);paid='0';note=(note?note+' ':'')+'Less than '+hm(d.minMins)+' worked, so the day is not counted.';}
+    else if(d.kind==='absent'){status='Absent';paid='0';}
+    else if(d.kind==='today'){status='Today — not counted yet';}
+    const cls=d.kind==='absent'||d.kind==='tooShort'?'abs':d.kind==='wo'||d.kind==='hol'||d.kind==='leave'?'off':'';
+    return `<tr class="${cls}${flagMis?' mis':''}"><td>${date}</td><td>${status}</td><td class="pu">${punches(d.rec)}</td><td class="r">${worked}</td><td class="r">${paid}</td><td class="r">${extra}</td><td class="r b">${amt?rs(amt):'—'}</td></tr>${note?`<tr class="note${flagMis?' mis':''}"><td></td><td colspan="6">${note}</td></tr>`:''}`;});
+  const T=(l,a,b,k)=>`<tr class="${k||''}"><td>${l}</td><td class="r">${a}</td><td class="r b">${b}</td></tr>`;
+  const capped=C.basePay<Math.round(sumBase)-1;
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Salary statement — ${E(st.name)} — ${ml}</title><style>
+  *{box-sizing:border-box}body{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;color:#111;margin:0;background:#fff;font-size:13px}
+  .w{max-width:900px;margin:0 auto;padding:28px 22px}h1{font-size:20px;margin:0}h2{font-size:14px;margin:22px 0 8px}
+  .sub{color:#555;margin-top:4px}.top{display:flex;justify-content:space-between;gap:16px;border-bottom:2px solid #f5a623;padding-bottom:12px;flex-wrap:wrap}
+  .net{text-align:right}.net b{font-size:24px;display:block}.rules{background:#fafafa;border:1px solid #eee;border-radius:8px;padding:12px 14px;line-height:1.7}
+  .rules b{font-variant-numeric:tabular-nums}table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#666;border-bottom:1px solid #ddd;padding:6px 6px}
+  td{padding:6px;border-bottom:1px solid #f0f0f0;vertical-align:top}.r{text-align:right}.b{font-weight:600}.pu{color:#444;font-size:12px}
+  tr.abs td{background:#fff4f4}tr.off td{background:#f5f8ff}tr.mis td{background:#fff3cd}tr.note td{font-size:12px;color:#7a5200;border-bottom:1px solid #eee;padding-top:0}
+  .neg{color:#b42318}.tot td{font-weight:700;border-top:2px solid #333}.grand td{font-size:15px;font-weight:800;background:#fff8ec}
+  .warn{background:#fff3cd;border:1px solid #f0d58a;border-radius:8px;padding:10px 12px;margin-top:12px}
+  .bar{display:flex;gap:8px;margin:14px 0}.bar button{border:1px solid #ccc;background:#fff;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer}
+  @media print{.bar{display:none}.w{padding:0}}</style></head><body><div class="w">
+  <div class="bar"><button onclick="window.print()">🖨️ Print / Save as PDF</button></div>
+  <div class="top"><div><h1>${E((biz&&biz.name)||'')} — Salary statement</h1><div class="sub">${E(st.name)} · ${ml}${C.payRec?' · Paid '+E(C.payRec.date||'')+' ('+E(C.payRec.net||'')+')':''}</div></div>
+    <div class="net">Net pay<b>${r0(C.net)}</b></div></div>
+  ${mismatch?`<div class="warn"><b>${mismatch} day${mismatch>1?'s':''} highlighted in yellow:</b> the saved hours differ from the punch times. Open those days in the app (Edit punch) and save them again to correct the hours, then recheck.</div>`:''}
+  <h2>How this salary is worked out</h2><div class="rules">
+  Monthly salary <b>${r0(cfg.base)}</b> ÷ <b>${new Date(C.year,C.month+1,0).getDate()} days</b> in ${ml} = <b>${rs(C.perDay)}</b> per day.<br>
+  Standard day = <b>${C.stdHours} hours</b>, so each hour worked is worth <b>${rs(hourly)}</b> (${rs(perMin)} per minute).<br>
+  Each working day pays for the hours actually worked, up to ${C.stdHours} hours. Time beyond that is overtime at <b>${r0(C.otRatePerHour)}/hour</b>${C.otRatePerHour?'':' (overtime is not paid)'}.<br>
+  Weekly offs are ${C.woPaid?'<b>paid</b> as a full day':'<b>not paid</b>'}; shop holidays are ${C.holidayPaid?'<b>paid</b> as a full day':'<b>not paid</b>'}. Absent days pay nothing.<br>
+  Arriving late has ${C.lateD?'a deduction (see below)':'<b>no fine</b>'} — but the minutes not worked are not paid.${C.minMins?' Days with less than '+hm(C.minMins)+' worked count as absent.':''}</div>
+  <h2>Day by day</h2><table><thead><tr><th>Date</th><th>Status</th><th>Punches</th><th class="r">Worked</th><th class="r">Paid time</th><th class="r">Short / extra</th><th class="r">Amount</th></tr></thead><tbody>${rows.join('')}</tbody></table>
+  <h2>Totals</h2><table><thead><tr><th>Item</th><th class="r">Detail</th><th class="r">Amount</th></tr></thead><tbody>
+  ${T('Hours worked (paid up to '+C.stdHours+'h a day)',hm(C.totalWorkedMins)+' × '+rs(hourly)+'/hr',r0(C.basePay)+(capped?' (limited to '+r0(C.maxPay)+')':''))}
+  ${T('Overtime',hm(C.otMins)+' × '+r0(C.otRatePerHour)+'/hr','+'+r0(C.otPay))}
+  ${C.woPay?T('Weekly offs',C.weeklyOffPaidDays+' × '+rs(C.perDay),'+'+r0(C.woPay)):''}
+  ${C.weeklyOffBonus?T('Worked on weekly off',hm(C.weeklyOffWorkedMins),'+'+r0(C.weeklyOffBonus)):''}
+  ${C.holidayPay?T('Holidays',C.holidayDays+' × '+rs(C.perDay),'+'+r0(C.holidayPay)):''}
+  ${C.paidLeaveAmt?T('Paid leave',C.paidLeaveDays+' × '+rs(C.perDay),'+'+r0(C.paidLeaveAmt)):''}
+  ${C.incentive?T('Sales incentive','','+'+r0(C.incentive)):''}
+  ${C.lateD?T('Late deduction',C.late+' late days','−'+r0(C.lateD)):''}
+  ${T('Gross salary','',r0(C.netBeforeAdv),'tot')}
+  ${C.advActual?T('Advance recovered',C.advCarryFwd>0?r0(C.advCarryFwd)+' still owed after this':'advance cleared','−'+r0(C.advActual)):''}
+  ${T('Net pay','',r0(C.net),'grand')}</tbody></table>
+  <p class="sub" style="font-size:11.5px">Day amounts are shown in paise; totals are rounded to the rupee, so they can differ from the sum of the days by ₹1–2. Present ${C.present} · Absent ${C.absent} · Late ${C.late} · Short days ${C.shortDays}.</p>
+  </div></body></html>`;
+}
+// Open the statement for staff + month (amounts as currently saved / shown)
+async function openPayStatement(sid,mv,opts){
+  const w=window.open('','_blank');if(!w){toast('Please allow pop-ups for this site to open the statement',true);return;}
+  w.document.write('<p style="font-family:sans-serif;padding:20px">Preparing statement…</p>');
+  try{const C=await computePayroll(sid,mv,opts||{});if(!C){w.close();return;}w.document.open();w.document.write(payStatementHtml(C,mv));w.document.close();}
+  catch(e){w.document.body.innerHTML='<p style="font-family:sans-serif;padding:20px">Could not make the statement: '+e.message+'</p>';}
+}
+window.printPayStatement=function(){
+  const sid=v('pay-staff-sel'),mv=v('pay-month');if(!sid||!mv)return toast('Select staff and month first',true);
+  if(payDirty)return toast('Press Apply first so the statement includes the new amounts',true);
+  const adv=document.getElementById('pay-advance-recover');
+  openPayStatement(sid,mv,{incentive:parseInt(v('pay-incentive-inp'))||0,advRecover:adv&&adv.dataset.userEdited?(parseInt(adv.value)||0):null});
+};
+
 // ── Salary for one staff + month ──
 // The phone Payroll tab and the computer salary sheet both use this, so the numbers can never differ.
 // opts: {incentive, advRecover (null = default), payRec (optional, already fetched), pre: {recs, marks, ledgers, advs} preloaded for many staff}
@@ -2123,6 +2209,9 @@ async function computePayroll(sid,mv,opts){
     var totalWorkedMins=0,shortMins=0,shortDays=0,otMins=0;
     var weeklyOffWorkedMins=0,weeklyOffWorked=0,weeklyOffPaidDays=0,paidLeaveDays=0,holidayDays=0;
     const holidayPaid=settings.holidayPaid!==false;
+    // Day-by-day record of what was counted (for the salary statement); does not affect the totals
+    var dayLog=[];
+    const punchMins=function(r){if(!r)return 0;var ss=r.sessions&&r.sessions.length?r.sessions:[r];return ss.reduce(function(t,x){if(!x.outTime)return t;var a=x.inISO?new Date(x.inISO):null,b=x.outISO?new Date(x.outISO):null;if(a&&b&&!isNaN(a)&&!isNaN(b))return t+Math.max(0,Math.round((b-a)/60000));var[i1,i2]=parseTime12(x.inTime);var[o1,o2]=parseTime12(x.outTime);return t+Math.max(0,(o1*60+o2)-(i1*60+i2));},0);};
 
     for(var i=1;i<=upto;i++){
       const ds=year+'-'+pad(month+1)+'-'+pad(i);
@@ -2133,7 +2222,7 @@ async function computePayroll(sid,mv,opts){
       // Today, still in progress: don't count it yet (not absent, not short)
       if(isCur&&i===now.getDate()){
         var openNow=rec&&(rec.sessions&&rec.sessions.length?rec.sessions.some(function(x){return !x.outTime;}):!rec.outTime);
-        if(!rec||openNow)continue;
+        if(!rec||openNow){dayLog.push({ds:ds,dow:dow,kind:'today',rec:rec});continue;}
       }
       // Weekly off
       if(cfg.weeklyOff>=0&&dow==cfg.weeklyOff){
@@ -2145,6 +2234,7 @@ async function computePayroll(sid,mv,opts){
           if(!wMins&&rec.outTime){var[wo,wom]=parseTime12(rec.outTime);var[wi,wim]=parseTime12(rec.inTime);wMins=Math.max(0,(wo*60+wom)-(wi*60+wim));}
           weeklyOffWorkedMins+=wMins;
         }
+        dayLog.push({ds:ds,dow:dow,kind:'wo',rec:rec,mins:rec&&rec.inTime?wMins:0,punch:punchMins(rec)});
         continue;
       }
       if(mark&&(mark.type==='holiday'||mark.type==='leave')){
@@ -2156,6 +2246,7 @@ async function computePayroll(sid,mv,opts){
           // Paid leave — count separately, NOT added to totalWorkedMins (added to net directly)
           if(mark.type==='leave'&&mark.paidLeave) paidLeaveDays++;
           if(mark.type==='holiday') holidayDays++;
+          dayLog.push({ds:ds,dow:dow,kind:mark.type==='holiday'?'hol':'leave',paid:mark.type==='holiday'?holidayPaid:!!mark.paidLeave,note:mark.note||'',rec:rec,punch:punchMins(rec)});
           continue;
         }
         if(mark.paidLeave&&mark.leaveType==='half') paidLeaveDays+=0.5;
@@ -2172,10 +2263,13 @@ async function computePayroll(sid,mv,opts){
             dayMins=Math.max(0,(oh*60+om)-(ih*60+im));
           }
         }
+        var partL=!!(mark&&mark.type==='leave');
         if(dayMins<minMins){
           // Worked less than minimum — count as absent
           absent++;
+          dayLog.push({ds:ds,dow:dow,kind:'tooShort',rec:rec,mins:dayMins,punch:punchMins(rec),minMins:minMins});
         } else {
+          dayLog.push({ds:ds,dow:dow,kind:'work',rec:rec,mins:dayMins,punch:punchMins(rec),base:Math.min(dayMins,stdMins),ot:Math.max(0,dayMins-stdMins),late:!!rec.late,partLeave:partL?mark:null});
           present++;
           if(rec.late) late++;
           // Cap base hours at standard — OT is separate
@@ -2191,6 +2285,7 @@ async function computePayroll(sid,mv,opts){
         }
       } else {
         absent++;
+        dayLog.push({ds:ds,dow:dow,kind:'absent',rec:rec});
       }
     }
 
@@ -2263,7 +2358,7 @@ async function computePayroll(sid,mv,opts){
       weeklyOffWorkedMins,weeklyOffWorked,weeklyOffPaidDays,paidLeaveDays,holidayDays,holidayPaid,
       perDay,eligibleDays,basePay,otPay,weeklyOffBonus,woPaid,woPay,lateD,incentive,
       totalOutstanding,thisMonthAdvs,thisMonthTotal,carryFwdAmt,defaultRecover,advRecover,
-      paidLeaveAmt,holidayPay,netBeforeAdv,advActual,net,advCarryFwd};
+      paidLeaveAmt,holidayPay,netBeforeAdv,advActual,net,advCarryFwd,dayLog,minMins,maxPay};
 }
 
 window.renderPayroll=async function(){
@@ -4590,11 +4685,13 @@ function dkDetail(focusKey){
     ${L('Gross',dkInr(C.netBeforeAdv),'tot')}${L('Advance recovered','−'+dkInr(C.advActual))}</div>
     <div class="dk-net"><span>Net pay${x.changed?' (before your change)':''}</span><b>${dkInr(C.net)}</b></div></div>
   <div class="dk-sec"><h4>Pay</h4>${x.pay?'':`<div class="dk-f2"><div class="dk-field"><label for="dk-pm">Paid by</label><select id="dk-pm" class="dk-inp"><option value="cash">💵 Cash</option><option value="upi">📱 UPI / GPay</option><option value="bank">🏦 Bank transfer</option></select></div><div class="dk-field"><label for="dk-pn">Note</label><input id="dk-pn" class="dk-inp" placeholder="e.g. UPI ref 1234"></div></div>`}
-    <div class="dk-row">${x.pay?`<button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Slip (PAID)</button>${paidAmt!==C.net?`<button class="dk-btn pri" onclick="deskPay('${ksEsc(s.id)}',true)">Update payment to ${dkInr(C.net)}</button>`:''}`:`<button class="dk-btn pri" ${x.changed||cur?'disabled':''} onclick="deskPay('${ksEsc(s.id)}')">✓ Mark ${dkInr(C.net)} paid</button><button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Preview slip</button>`}</div>
+    <div class="dk-row">${x.pay?`<button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Slip (PAID)</button>${paidAmt!==C.net?`<button class="dk-btn pri" onclick="deskPay('${ksEsc(s.id)}',true)">Update payment to ${dkInr(C.net)}</button>`:''}`:`<button class="dk-btn pri" ${x.changed||cur?'disabled':''} onclick="deskPay('${ksEsc(s.id)}')">✓ Mark ${dkInr(C.net)} paid</button><button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Preview slip</button>`}<button class="dk-btn" onclick="deskStatement('${ksEsc(s.id)}')">📄 Day-by-day</button></div>
     ${x.changed?'<span class="dk-acc" style="font-size:12px;font-weight:600">Apply or Save all first — the amounts above don\'t include your change yet.</span>':cur&&!x.pay?'<span class="dk-mute" style="font-size:12px">Pay after the month ends.</span>':''}</div>`;
   if(focusKey){const el=dkEl(focusKey==='inc'?'dk-dinc':'dk-dadv');if(el&&document.activeElement&&document.activeElement.closest&&!document.activeElement.closest('#dk-det')){/* typed in the table: leave focus there */}
     else if(el){el.focus();const v=el.value;el.value='';el.value=v;}}
 }
+window.deskStatement=function(sid){const x=(DK.payRows||[]).find(r=>r.s.id===sid);if(!x)return;if(x.changed)return toast('Apply or Save all first so the statement includes your change',true);
+  openPayStatement(sid,DK.mv,{payRec:x.pay,incentive:x.saved.inc,advRecover:x.saved.adv});};
 window.deskAdvPreset=function(f){const x=(DK.payRows||[]).find(r=>r.s.id===DK.sel);if(!x)return;deskEdit(x.s.id,'adv',String(Math.round(x.C.totalOutstanding*f)));const tr=document.querySelector('#dk-sheet tr[onclick*="\''+x.s.id+'\'"] input[aria-label^="Advance"]');if(tr)tr.value=Math.round(x.C.totalOutstanding*f)||'';};
 window.deskApply=async function(){setLoading(true,'Saving…');try{const n=await dkSaveDrafts([DK.sel]);if(n)toast('✓ Saved for '+dkName(DK.sel));}catch(e){toast('Error: '+e.message,true);}setLoading(false);deskRender(true);};
 window.deskPay=async function(sid,update){const x=(DK.payRows||[]).find(r=>r.s.id===sid);if(!x)return;
@@ -5344,7 +5441,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.2</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.3</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -5724,6 +5821,7 @@ body.dk-body .sheet{border-radius:20px}
             <button class="btn btn-primary" id="pay-mark-btn" onclick="markAsPaid()">✓ Mark as Paid</button>
             <button class="btn btn-secondary" onclick="printSalarySlip()" style="width:auto;padding:14px 18px;">🖨️ Slip</button>
           </div>
+          <button class="btn btn-ghost" onclick="printPayStatement()" style="margin-top:10px;">📄 Day-by-day statement (to check with staff)</button>
         </div>
         </div></div>
       </div>
@@ -6359,7 +6457,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.2</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.3</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6367,11 +6465,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.25.3 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.3</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll: “📄 Day-by-day statement” — every day of the month with punches, hours paid, short / overtime and the money for that day, the rules in plain words, and totals that match the slip. Days where saved hours don’t match the punch times are highlighted</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.25.2 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.2</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.25.2</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Shift timeline: the red “now” line no longer slides into the menu after midnight / before 9 am — it shows only during shop hours on the timeline</span></div>
