@@ -50,7 +50,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.25.9';
+const APP_VERSION = 'v1.26.0';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -4079,8 +4079,86 @@ window.ksSubmitLeave=async function(){
 // ─────────────────────────────────────────────
 //  SALARY SLIP PRINT
 // ─────────────────────────────────────────────
-// Opens the owner's mail app with the slip written out in the email.
-// Uses the same numbers shown on screen (renderPayroll), like the printed slip.
+// Salary slip as data, read from the payroll screen (renderPayroll) — the same
+// numbers the printed slip shows. Used for the email text and the PDF.
+async function slipData(sid,mv){
+  const staff=staffArr.find(s=>s.id===sid);
+  const g=id=>{const el=document.getElementById(id);return el?el.textContent.trim():'';};
+  const vis=id=>{const el=document.getElementById(id);return el&&el.style.display!=='none';};
+  const ml=new Date(parseInt(mv.split('-')[0]),parseInt(mv.split('-')[1])-1,1).toLocaleString('en-IN',{month:'long',year:'numeric'});
+  let payRec=null;try{payRec=await fbGet(p.payment(sid,mv));}catch(e){}
+  const cfg=getSalaryCfg._cache&&getSalaryCfg._cache[sid];
+  const rows=[[g('pb-base-lbl'),g('pb-base')],[g('pb-ot-lbl'),g('pb-ot')],['Sales Incentive',g('pb-incentive')]];
+  if(vis('pb-woff-row'))rows.push([g('pb-woff-lbl'),g('pb-woff-bonus')]);
+  if(vis('pb-wopay-row'))rows.push([g('pb-wopay-lbl'),g('pb-wopay')]);
+  if(vis('pb-holiday-row'))rows.push([g('pb-holiday-lbl'),g('pb-holiday')]);
+  if(vis('pb-paidleave-row'))rows.push([g('pb-paidleave-lbl'),g('pb-paidleave')]);
+  rows.push([g('pb-late-lbl'),g('pb-late')]);
+  const out=document.getElementById('payroll-output');
+  return {staff,ml,mv,payRec,rows,
+    duty:cfg?'Duty '+dutyText(cfg)+' · paid on '+(cfg.standardHours||calcAutoStdHoursFromCfg(cfg))+'h/day':'',
+    gross:g('pb-gross'),adv:g('pb-advance'),net:g('pb-net'),
+    owed:parseInt(out&&out.dataset.totalOutstanding)||0,left:parseInt(out&&out.dataset.advCarryFwd)||0,
+    notes:[vis('pb-short-row')?g('pb-short-lbl'):'',g('pb-absent-lbl')].filter(Boolean),
+    paidText:payRec?'Paid on '+payRec.date+' by '+({cash:'Cash',upi:'UPI',bank:'Bank transfer'}[payRec.mode]||payRec.mode)+(payRec.note?' ('+payRec.note+')':''):''};
+}
+function slipEmailText(d,withPdf){
+  const L=['Dear '+d.staff.name+',','','Your salary slip for '+d.ml+' from '+(biz.name||'')+(withPdf?' is attached (PDF).':'.'),''];
+  if(d.duty)L.push(d.duty,'');
+  d.rows.forEach(r=>L.push(r[0]+': '+r[1]));
+  L.push('------------------------------','GROSS SALARY: '+d.gross,'Advance recovered: '+d.adv);
+  if(d.owed>0)L.push('Advance still owed after this month: ₹'+d.left.toLocaleString('en-IN'));
+  L.push('------------------------------','NET PAYABLE: '+d.net,'',...d.notes,'',d.paidText||'Not paid yet.','','If anything looks wrong, please tell us.','',biz.name||'');
+  return L.join('\n');
+}
+// The PDF uses a standard font, which has no ₹ sign — amounts are written "Rs."
+function pdfTxt(t){return String(t||'').replace(/₹\s?/g,'Rs. ').replace(/[−–—]/g,'-').replace(/✓\s?/g,'').replace(/[^\x00-\xFF]/g,'');}
+let jsPdfP=null;
+function loadJsPdf(){
+  if(window.jspdf)return Promise.resolve(window.jspdf);
+  if(!jsPdfP)jsPdfP=new Promise((res,rej)=>{const sc=document.createElement('script');sc.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';sc.onload=()=>res(window.jspdf);sc.onerror=()=>{jsPdfP=null;rej(new Error('Could not load the PDF maker — check internet'));};document.head.appendChild(sc);});
+  return jsPdfP;
+}
+async function slipPdf(d){
+  const {jsPDF}=await loadJsPdf();
+  const pdf=new jsPDF({unit:'mm',format:'a4'}),X=20,R=190,W=R-X;let y=24;
+  const T=(t,x,yy,o)=>pdf.text(pdfTxt(t),x,yy,o||{});
+  pdf.setFont('helvetica','bold');pdf.setFontSize(18);pdf.setTextColor(17);T(biz.name,X,y);
+  pdf.setFontSize(10);pdf.setTextColor(245,166,35);T('SALARY SLIP',R,y-1,{align:'right'});
+  pdf.setFont('helvetica','normal');pdf.setTextColor(110);T(d.ml,R,y+5,{align:'right'});
+  if(biz.location){pdf.setFontSize(10);T(biz.location,X,y+6);}
+  y+=12;pdf.setDrawColor(245,166,35);pdf.setLineWidth(0.6);pdf.line(X,y,R,y);
+  y+=7;const dutyLines=pdf.splitTextToSize(pdfTxt('@'+(d.staff.username||'')+' · '+d.ml+(d.duty?' · '+d.duty:'')),W-(d.payRec?40:12));
+  const boxH=12+dutyLines.length*4.5;
+  pdf.setFillColor(246,246,246);pdf.roundedRect(X,y,W,boxH,3,3,'F');
+  pdf.setFont('helvetica','bold');pdf.setFontSize(13);pdf.setTextColor(17);T(d.staff.name,X+6,y+8);
+  pdf.setFont('helvetica','normal');pdf.setFontSize(9);pdf.setTextColor(100);pdf.text(dutyLines,X+6,y+13.5);
+  if(d.payRec){pdf.setDrawColor(34,197,94);pdf.setLineWidth(0.6);pdf.roundedRect(R-30,y+boxH/2-5,24,10,5,5,'S');pdf.setTextColor(34,197,94);pdf.setFont('helvetica','bold');pdf.setFontSize(10);T('PAID',R-18,y+boxH/2+1.5,{align:'center'});}
+  y+=boxH+10;
+  pdf.setFont('helvetica','bold');pdf.setFontSize(8);pdf.setTextColor(150);T('DESCRIPTION',X,y);T('AMOUNT',R,y,{align:'right'});
+  y+=2.5;pdf.setDrawColor(230);pdf.setLineWidth(0.2);pdf.line(X,y,R,y);
+  const row=(label,amt,col,bold,sub)=>{
+    y+=7;pdf.setFont('helvetica',bold?'bold':'normal');pdf.setFontSize(bold?12:10.5);pdf.setTextColor(30);T(label,X,y);
+    pdf.setFont('helvetica','bold');pdf.setTextColor(...col);T(amt,R,y,{align:'right'});
+    if(sub){y+=4.5;pdf.setFont('helvetica','normal');pdf.setFontSize(8.5);pdf.setTextColor(140);T(sub,X,y);}
+    y+=3;pdf.setDrawColor(240);pdf.line(X,y,R,y);};
+  const GREEN=[22,163,74],RED=[220,38,38],ORANGE=[217,119,6],DARK=[17,17,17];
+  d.rows.forEach((r,i)=>row(r[0],r[1],i===d.rows.length-1?RED:GREEN));
+  y+=1;row('Gross Salary',d.gross,GREEN,true);
+  row('Advance Recovered',d.adv,RED);
+  if(d.owed>0)row('Advance still owed after this month','Rs. '+d.left.toLocaleString('en-IN'),d.left>0?ORANGE:GREEN,false,'Total owed Rs. '+d.owed.toLocaleString('en-IN')+(d.left>0?' · carries to next month':' · cleared'));
+  y+=7;pdf.setFillColor(238,120,40);pdf.roundedRect(X,y,W,16,3,3,'F');
+  pdf.setTextColor(255);pdf.setFont('helvetica','normal');pdf.setFontSize(11);T('Net Payable',X+6,y+10);
+  pdf.setFont('helvetica','bold');pdf.setFontSize(17);T(d.net,R-6,y+11,{align:'right'});
+  y+=24;pdf.setFont('helvetica','normal');pdf.setFontSize(9);pdf.setTextColor(120);
+  d.notes.forEach(n=>{T(n,X,y);y+=5;});
+  if(d.paidText){y+=2;pdf.setTextColor(...GREEN);pdf.setFont('helvetica','bold');T(d.paidText,X,y);y+=5;}
+  pdf.setFont('helvetica','normal');pdf.setFontSize(8);pdf.setTextColor(170);T('AttendPro · '+new Date().toLocaleDateString('en-IN'),105,285,{align:'center'});
+  const fname=('Salary-slip_'+d.staff.name+'_'+d.mv).replace(/[^A-Za-z0-9_-]+/g,'-')+'.pdf';
+  return new File([pdf.output('blob')],fname,{type:'application/pdf'});
+}
+// Email slip: makes the PDF, then a small box with the ways to send it.
+// Sharing needs a fresh tap, so the PDF is made first and the share starts from the box.
 window.emailSalarySlip=async function(){
   const sid=v('pay-staff-sel'),mv=v('pay-month');
   if(!sid||!mv)return toast('Select staff and month first',true);
@@ -4090,38 +4168,47 @@ window.emailSalarySlip=async function(){
     if(!confirm('No email saved for '+staff.name+'. Add it now?'))return;
     to=await editStaffEmail(sid);if(!to)return;
   }
-  const g=id=>{const el=document.getElementById(id);return el?el.textContent.trim():'';};
-  const vis=id=>{const el=document.getElementById(id);return el&&el.style.display!=='none';};
-  const ml=new Date(parseInt(mv.split('-')[0]),parseInt(mv.split('-')[1])-1,1).toLocaleString('en-IN',{month:'long',year:'numeric'});
-  let payRec=null;try{payRec=await fbGet(p.payment(sid,mv));}catch(e){}
-  const cfg=getSalaryCfg._cache&&getSalaryCfg._cache[sid];
-  const L=[];const row=(a,b)=>L.push(a+': '+b);
-  L.push('Dear '+staff.name+',','','Your salary slip for '+ml+' from '+(biz.name||'')+'.','');
-  if(cfg)L.push('Duty '+dutyText(cfg)+' · paid on '+(cfg.standardHours||calcAutoStdHoursFromCfg(cfg))+'h/day','');
-  row(g('pb-base-lbl'),g('pb-base'));
-  row(g('pb-ot-lbl'),g('pb-ot'));
-  row('Sales Incentive',g('pb-incentive'));
-  if(vis('pb-woff-row'))row(g('pb-woff-lbl'),g('pb-woff-bonus'));
-  if(vis('pb-wopay-row'))row(g('pb-wopay-lbl'),g('pb-wopay'));
-  if(vis('pb-holiday-row'))row(g('pb-holiday-lbl'),g('pb-holiday'));
-  if(vis('pb-paidleave-row'))row(g('pb-paidleave-lbl'),g('pb-paidleave'));
-  row(g('pb-late-lbl'),g('pb-late'));
-  L.push('------------------------------');
-  row('GROSS SALARY',g('pb-gross'));
-  row('Advance recovered',g('pb-advance'));
-  const out=document.getElementById('payroll-output'),owed=parseInt(out&&out.dataset.totalOutstanding)||0,left=parseInt(out&&out.dataset.advCarryFwd)||0;
-  if(owed>0)row('Advance still owed after this month','\u20b9'+left.toLocaleString('en-IN'));
-  L.push('------------------------------');
-  row('NET PAYABLE',g('pb-net'));
-  L.push('');
-  if(vis('pb-short-row'))L.push(g('pb-short-lbl'));
-  L.push(g('pb-absent-lbl'));
-  if(payRec)L.push('','PAID on '+payRec.date+' by '+({cash:'Cash',upi:'UPI',bank:'Bank transfer'}[payRec.mode]||payRec.mode)+(payRec.note?' ('+payRec.note+')':''));
-  else L.push('','Not paid yet.');
-  L.push('','If anything looks wrong, please tell us.','',biz.name||'');
-  const subject='Salary slip — '+ml+' — '+(biz.name||'');
-  window.openMailto('mailto:'+encodeURIComponent(to).replace('%40','@')+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(L.join('\n')));
+  setLoading(true,'Making PDF…');
+  let d,file;
+  try{d=await slipData(sid,mv);file=await slipPdf(d);}
+  catch(e){setLoading(false);toast('PDF could not be made — sending the slip as text instead',true);d=d||await slipData(sid,mv);openSlipMail(to,d,false);return;}
+  setLoading(false);
+  const canShare=!!(navigator.canShare&&navigator.share&&navigator.canShare({files:[file]}));
+  const old=document.getElementById('slip-mail-box');if(old)old.remove();
+  const box=document.createElement('div');box.id='slip-mail-box';
+  box.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  box.innerHTML=`<div style="background:var(--s1);color:var(--text);border:1px solid var(--border);border-radius:16px;max-width:420px;width:100%;padding:20px;font-size:14px;">
+    <div style="font-family:var(--fh);font-weight:800;font-size:17px;margin-bottom:4px;">✉️ Salary slip ready</div>
+    <div style="color:var(--muted);font-size:13px;margin-bottom:14px;">${ksEsc(d.staff.name)} · ${ksEsc(d.ml)} · ${ksEsc(d.net)}<br>PDF: ${ksEsc(file.name)}</div>
+    <div style="display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:14px;"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;">To: <b>${ksEsc(to)}</b></span><button class="btn btn-ghost btn-xs" id="smb-copy">Copy</button></div>
+    ${canShare?`<button class="btn btn-primary" id="smb-share">📎 Share PDF → Mail / Gmail</button>
+    <div style="font-size:12px;color:var(--muted);margin:6px 0 12px;">The PDF is attached for you. Choose Mail or Gmail, then paste the email address in <b>To</b> (it's copied).</div>`:''}
+    <button class="btn ${canShare?'btn-ghost':'btn-primary'}" id="smb-dl">⬇️ Download PDF + open email</button>
+    <div style="font-size:12px;color:var(--muted);margin:6px 0 12px;">Saves the PDF and opens your mail app addressed to ${ksEsc(d.staff.name)} — attach the saved PDF (in Downloads) before sending.</div>
+    <button class="btn btn-ghost" id="smb-close">Close</button></div>`;
+  document.body.appendChild(box);
+  const close=()=>box.remove();
+  const copy=()=>{try{navigator.clipboard.writeText(to).catch(()=>{});}catch(e){}};
+  box.onclick=e=>{if(e.target===box)close();};
+  box.querySelector('#smb-close').onclick=close;
+  box.querySelector('#smb-copy').onclick=()=>{copy();toast('✓ Email address copied');};
+  const sh=box.querySelector('#smb-share');
+  if(sh)sh.onclick=async()=>{
+    copy();
+    try{await navigator.share({files:[file],title:'Salary slip — '+d.ml+' — '+(biz.name||''),text:slipEmailText(d,true)});close();}
+    catch(e){if(e&&e.name!=='AbortError')toast('Sharing did not work — use Download instead',true);}
+  };
+  box.querySelector('#smb-dl').onclick=()=>{
+    const url=URL.createObjectURL(file),a=document.createElement('a');
+    a.href=url;a.download=file.name;document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),60000);
+    setTimeout(()=>openSlipMail(to,d,true),400);close();
+  };
 };
+function openSlipMail(to,d,withPdf){
+  const subject='Salary slip — '+d.ml+' — '+(biz.name||'');
+  window.openMailto('mailto:'+encodeURIComponent(to).replace('%40','@')+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(slipEmailText(d,withPdf)));
+}
 window.openMailto=function(url){location.href=url;};
 window.printSalarySlip=function(){
   const sid=v('pay-staff-sel'),mv=v('pay-month');
@@ -5575,7 +5662,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.9</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.26.0</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6594,7 +6681,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.9</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.26.0</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6602,11 +6689,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.26.0 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.26.0</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Email slip now makes a PDF salary slip. "Share PDF → Mail / Gmail" attaches it for you (the staff email is copied to paste in To). Where sharing isn't available, "Download PDF + open email" saves it and opens your mail app</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.25.9 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.9</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.25.9</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Staff email: add it when adding staff, or with the ✉️ Email button on each staff member</span></div>
