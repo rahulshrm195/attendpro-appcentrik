@@ -6,7 +6,7 @@
 //  • Background sync ready (future)
 // ═══════════════════════════════════════════════
 
-const CACHE_NAME    = 'attendpro-v1.25.7';
+const CACHE_NAME    = 'attendpro-v1.25.8';
 const OFFLINE_URL   = './index.html';
 
 // Files to cache on install
@@ -53,22 +53,24 @@ self.addEventListener('fetch', event => {
     url.includes('cdnjs.cloudflare.com')
   ) return;
 
+  const network = fetch(event.request)
+    .then(response => {
+      // Cache successful responses for the app shell
+      if (response && response.status === 200 && response.type === 'basic') {
+        const clone = response.clone();
+        caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+      }
+      return response;
+    });
+  const fromCache = () => caches.match(event.request).then(cached => cached || caches.match(OFFLINE_URL));
+  // Slow connection: after 4 s serve the saved copy; the download keeps going
+  // and the fresh copy is used next time.
+  const slow = new Promise(resolve => setTimeout(resolve, 4000))
+    .then(() => caches.match(event.request))
+    .then(cached => cached || network);
+  event.waitUntil(network.catch(() => {}));
   event.respondWith(
-    fetch(event.request)
-      .then(response => {
-        // Cache successful responses for the app shell
-        if (response && response.status === 200 && response.type === 'basic') {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
-        }
-        return response;
-      })
-      .catch(() => {
-        // Offline: serve from cache
-        return caches.match(event.request).then(cached => {
-          return cached || caches.match(OFFLINE_URL);
-        });
-      })
+    Promise.race([network, slow]).catch(fromCache)
   );
 });
 
