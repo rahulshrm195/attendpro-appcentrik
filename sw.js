@@ -6,7 +6,7 @@
 //  • Background sync ready (future)
 // ═══════════════════════════════════════════════
 
-const CACHE_NAME    = 'attendpro-v1.25.8';
+const CACHE_NAME    = 'attendpro-v1.25.9';
 const OFFLINE_URL   = './index.html';
 
 // Files to cache on install
