@@ -47,7 +47,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.25.4';
+const APP_VERSION = 'v1.25.5';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -4631,12 +4631,13 @@ async function dkPay(){
   const pickNet=[...DK.pick].reduce((a,id)=>a+rows.find(r=>r.s.id===id).C.net,0);
   const val=(x,k)=>x.e?x.e[k]:(k==='inc'?x.saved.inc:(x.saved.adv!=null?x.saved.adv:x.C.advRecover));
   dkEl('dk-page').innerHTML=`<div class="dk-ph"><div><h1>Payroll · ${dkMonthLabel(mv)}</h1><p>${cur?'This month is still running — the numbers only count days up to today.':'Check punches, enter incentives, then pay. The slip gets a PAID stamp after you mark it paid.'}</p></div><div class="dk-sp"></div>${dkMsw(mv,'deskPayMonth')}</div>
-  <div class="dk-steps">${step(1,!fixN,fixN>0,'Check punches',fixN?fixN+' day'+(fixN>1?'s':'')+' with problems':'No problems',"deskGo('fix')")}${step(2,!chN&&!fixN&&incN>0,!fixN&&chN>0,'Incentives & advances',chN?chN+' not saved':incN+' of '+rows.length+' have incentive',"document.getElementById('dk-sheet').scrollIntoView({behavior:'smooth'})")}${step(3,rows.length&&paidN===rows.length,!fixN&&!chN&&paidN<rows.length,'Pay',paidN+' of '+rows.length+' paid',"document.getElementById('dk-sheet').scrollIntoView({behavior:'smooth'})")}${step(4,false,rows.length&&paidN===rows.length,'Slips','PAID stamp after paying',"deskSlip(DK.sel)")}</div>
-  <div class="dk-stats"><div class="dk-stat"><div class="l">Cash to hand over</div><div class="v">${dkInr(T('net'))}</div><div class="f"><span>Gross <b>${dkInr(T('netBeforeAdv'))}</b></span><span>${rows.length} staff</span></div></div>
+  <div class="dk-payg"><div style="display:grid;gap:12px;min-width:0;align-content:start" id="dk-sheet">
+  <div class="dk-steps dk-g2">${step(1,!fixN,fixN>0,'Check punches',fixN?fixN+' day'+(fixN>1?'s':'')+' with problems':'No problems',"deskGo('fix')")}${step(2,!chN&&!fixN&&incN>0,!fixN&&chN>0,'Incentives & advances',chN?chN+' not saved':incN+' of '+rows.length+' have incentive',"document.getElementById('dk-sheet').scrollIntoView({behavior:'smooth'})")}${step(3,rows.length&&paidN===rows.length,!fixN&&!chN&&paidN<rows.length,'Pay',paidN+' of '+rows.length+' paid',"document.getElementById('dk-sheet').scrollIntoView({behavior:'smooth'})")}${step(4,false,rows.length&&paidN===rows.length,'Slips','PAID stamp after paying',"deskSlip(DK.sel)")}</div>
+  <div class="dk-stats dk-g2"><div class="dk-stat"><div class="l">Cash to hand over</div><div class="v">${dkInr(T('net'))}</div><div class="f"><span>Gross <b>${dkInr(T('netBeforeAdv'))}</b></span><span>${rows.length} staff</span></div></div>
     <div class="dk-stat"><div class="l">Advance recovered</div><div class="v dk-acc">${dkInr(T('advActual'))}</div><div class="f"><span>Still owed after</span><b>${dkInr(rows.reduce((a,x)=>a+(x.C.advCarryFwd||0),0))}</b></div></div>
     <div class="dk-stat"><div class="l">Incentives & OT</div><div class="v" style="color:var(--green)">${dkInr(T('incentive')+T('otPay'))}</div><div class="f"><span>Incentive <b>${dkInr(T('incentive'))}</b></span><span>OT <b>${dkInr(T('otPay'))}</b></span></div></div>
     <div class="dk-stat"><div class="l">Paid</div><div class="v">${paidN} / ${rows.length}</div><div class="dk-bar"><i style="width:${rows.length?paidN/rows.length*100:0}%;background:var(--green)"></i></div><div class="f"><span>Unpaid</span><b>${dkInr(unpaid.reduce((a,x)=>a+x.C.net,0))}</b></div></div></div>
-  <div class="dk-payg"><div style="display:grid;gap:10px;min-width:0" id="dk-sheet">
+
     <div class="dk-chips">${[['all','All',rows.length],['check','Needs a look',cnt('check')],['ready','Ready to pay',cnt('ready')],['paid','Paid',cnt('paid')]].map(([k,l,n])=>`<button class="dk-chip ${PF===k?'on':''}" onclick="DK.pf='${k}';deskRender(true)">${l}<b>${n}</b></button>`).join('')}</div>
     <div class="dk-card"><div class="dk-tw"><table class="dk-t"><thead><tr><th style="width:28px"><input type="checkbox" class="dk-cbx" onchange="deskPickAll(this.checked)" aria-label="Select all ready" ${cur?'disabled':''}></th><th>Staff</th><th class="r">P / A</th><th class="r">Incentive</th><th class="r">Advance</th><th class="r">Net pay</th><th>Status</th></tr></thead><tbody>
     ${rows.filter(fl).map(x=>{const s=x.s,C=x.C,can=!x.pay&&!x.changed&&!cur,paidAmt=x.pay?(x.pay.netAmount!=null?x.pay.netAmount:parseInt(String(x.pay.net||'').replace(/[^0-9]/g,''))||0):0;
@@ -5342,7 +5343,7 @@ body.dk-body .sheet{border-radius:20px}
 .dk-step b{display:block;font-size:13px}
 .dk-step small{color:var(--muted);font-size:11.5px}
 .dk-payg{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(340px,1fr);gap:16px;align-items:start}
-.dk-det{position:sticky;top:70px;max-height:calc(100vh - 86px);overflow:auto}
+.dk-det{position:sticky;top:70px;max-height:calc(100vh - 86px);overflow:auto;align-self:start}
 .dk-sec{padding:12px 16px;border-top:1px solid var(--border);display:grid;gap:10px}
 .dk-sec h4{margin:0;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
 .dk-mini{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}
@@ -5412,6 +5413,14 @@ body.dk-body .sheet{border-radius:20px}
 .dk-db .lb{font-size:9.5px;color:var(--muted);text-align:center;padding-top:4px;font-variant-numeric:tabular-nums}
 .dk-db .lb.sun{color:var(--accent)}
 #desk{background:linear-gradient(90deg,var(--s1) 216px,var(--border) 216px,var(--border) 217px,transparent 217px),var(--bg)}
+#desk .dk-steps.dk-g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+#desk .dk-steps.dk-g2 .dk-step:nth-child(2n){border-right:0}
+#desk .dk-steps.dk-g2 .dk-step:nth-child(-n+2){border-bottom:1px solid var(--border)}
+#desk .dk-stats.dk-g2{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+#desk .dk-stats.dk-g2 .dk-stat{padding:11px 14px;gap:5px}
+#desk .dk-stats.dk-g2 .dk-stat .v{font-size:21px}
+#desk #dk-det>.dk-ch{flex-wrap:nowrap;align-items:flex-start}
+#desk #dk-det>.dk-ch>div{min-width:0}
 /* desk analytics */
 #desk .f-ok{background:var(--green);fill:var(--green)} #desk .f-late{background:var(--accent);fill:var(--accent)} #desk .f-abs{background:var(--red);fill:var(--red)}
 #desk .f-rate,#desk .f-hrs{background:var(--blue)}
@@ -5457,7 +5466,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.4</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.5</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6474,7 +6483,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.4</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.5</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6482,11 +6491,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.25.5 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.5</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Computer Payroll: steps and summary cards are now 2×2 on the left, and the selected employee's panel starts at the top of the page — no scrolling to see their details</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.25.4 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.4</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.25.4</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Duty time (e.g. 10:00 am – 9:30 pm) now shown next to the paid hours per day — in Salary Settings, the day-by-day statement, the salary slip and Payroll — so staff know paid hours don’t shorten their duty time</span></div>
