@@ -47,7 +47,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.25.5';
+const APP_VERSION = 'v1.25.6';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -4677,7 +4677,7 @@ window.deskSaveAll=async function(){setLoading(true,'Saving…');try{const n=awa
 function dkDetail(focusKey){
   const host=dkEl('dk-det');if(!host)return;const x=(DK.payRows||[]).find(r=>r.s.id===DK.sel);if(!x){host.innerHTML='<div class="dk-empty">Pick someone on the left.</div>';return;}
   const s=x.s,C=x.C,cur=DK.mv===curMonthKey(),e=x.e,adv=e?e.adv:(x.saved.adv!=null?x.saved.adv:C.advRecover),inc=e?e.inc:x.saved.inc;
-  const paidAmt=x.pay?(x.pay.netAmount!=null?x.pay.netAmount:parseInt(String(x.pay.net||'').replace(/[^0-9]/g,''))||0):0,left=Math.max(0,C.totalOutstanding-Math.min(adv||0,C.totalOutstanding));
+  const paidAmt=x.pay?(x.pay.netAmount!=null?x.pay.netAmount:parseInt(String(x.pay.net||'').replace(/[^0-9]/g,''))||0):0;
   const L=(a,b,k)=>`<div class="ln ${k||''}"><span>${a}</span><span>${b}</span></div>`,pd=Math.round(C.perDay);
   host.innerHTML=`<div class="dk-ch">${dkAv(s.id)}<div><h2>${ksEsc(s.name)}</h2><span class="h">${dkInr(C.cfg.base)}/month · day ${dkInr(pd)}${C.cfg.weeklyOff>=0?' · off '+DOW_SHORT[C.cfg.weeklyOff]:''} · duty ${ksEsc(dutyText(C.cfg))} · paid on ${C.stdHours}h/day</span></div><span class="dk-sp"></span>${x.pay?'<span class="dk-tag good d">Paid '+ksEsc(x.pay.date||'')+' · '+ksEsc(x.pay.mode||'')+'</span>':x.changed?'<span class="dk-tag brand d">Not saved</span>':''}</div>
   ${x.pay&&paidAmt!==C.net?`<div class="dk-sec"><div class="dk-alert"><span class="ic">!</span><div class="t">Paid ${ksEsc(x.pay.net||'')}, now calculates <b>${dkInr(C.net)}</b> (attendance or amounts changed since).</div></div></div>`:''}
@@ -4688,7 +4688,7 @@ function dkDetail(focusKey){
     ${C.totalOutstanding>0?`<div class="dk-adv"><div style="display:flex;justify-content:space-between"><b>Owes</b><b class="dk-acc">${dkInr(C.totalOutstanding)}</b></div><div class="dk-debt"><i style="width:${Math.min(100,(adv||0)/C.totalOutstanding*100)}%"></i></div>
       ${C.carryFwdAmt>0&&C.thisMonthTotal>0?`<span class="dk-mute" style="font-size:12px">Carried forward ${dkInr(C.carryFwdAmt)} · this month ${dkInr(C.thisMonthTotal)}</span>`:''}
       <div class="dk-ir"><input id="dk-dadv" class="dk-inp" type="number" min="0" value="${adv||''}" placeholder="0" ${x.pay?'disabled':''} oninput="deskEdit('${ksEsc(s.id)}','adv',this.value)" onkeydown="if(event.key==='Enter')deskApply()" aria-label="Recover this month">${x.pay?'':`<button class="dk-btn sm" onclick="deskAdvPreset(1)">Full</button><button class="dk-btn sm" onclick="deskAdvPreset(.5)">Half</button><button class="dk-btn sm" onclick="deskAdvPreset(0)">None</button>`}</div>
-      <span class="dk-mute" style="font-size:12px">${x.pay?'Recovered '+dkInr(C.advActual):left?dkInr(left)+' carries to next month':'✓ Cleared this month'}</span></div>`:'<span class="dk-mute" style="font-size:12px">No advance owed.</span>'}
+      <span class="${!x.changed&&C.advActual<C.advRecover?'dk-acc':'dk-mute'}" style="font-size:12px${!x.changed&&C.advActual<C.advRecover?';font-weight:600':''}">${x.pay?'Recovered '+dkInr(C.advActual)+(C.advCarryFwd>0?' · '+dkInr(C.advCarryFwd)+' still owed':''):x.changed?'Press Apply to see what carries to next month':C.advActual<C.advRecover?'Salary is only '+dkInr(C.netBeforeAdv)+', so only '+dkInr(C.advActual)+' can be recovered — '+dkInr(C.advCarryFwd)+' carries to next month':C.advCarryFwd>0?dkInr(C.advCarryFwd)+' carries to next month':'✓ Cleared this month'}</span></div>`:'<span class="dk-mute" style="font-size:12px">No advance owed.</span>'}
     ${x.pay?'':`<button class="dk-btn ${x.changed?'pri':''}" style="justify-content:center" ${x.changed?'':'disabled'} onclick="deskApply()">✓ Apply to ${dkMonthLabel(DK.mv).split(' ')[0]} salary</button>`}</div>
   <div class="dk-sec"><h4>Salary</h4><div class="dk-lines">
     ${L('Base pay · '+dkHM(C.totalWorkedMins)+' × '+dkInr(C.perDay/C.stdHours)+'/hr',dkInr(C.basePay))}
@@ -4699,7 +4699,7 @@ function dkDetail(focusKey){
     ${C.paidLeaveAmt?L('Paid leave · '+C.paidLeaveDays+' × '+dkInr(pd),'+'+dkInr(C.paidLeaveAmt)):''}
     ${L('Sales incentive','+'+dkInr(C.incentive))}
     ${C.lateD?L('Late deduction · '+C.late+' days','−'+dkInr(C.lateD)):''}
-    ${L('Gross',dkInr(C.netBeforeAdv),'tot')}${L('Advance recovered','−'+dkInr(C.advActual))}</div>
+    ${L('Gross',dkInr(C.netBeforeAdv),'tot')}${L('Advance recovered','−'+dkInr(C.advActual))}${C.totalOutstanding>0?L('Advance still owed after this month',dkInr(C.advCarryFwd),C.advCarryFwd>0?'dk-acc':''):''}</div>
     <div class="dk-net"><span>Net pay${x.changed?' (before your change)':''}</span><b>${dkInr(C.net)}</b></div></div>
   <div class="dk-sec"><h4>Pay</h4>${x.pay?'':`<div class="dk-f2"><div class="dk-field"><label for="dk-pm">Paid by</label><select id="dk-pm" class="dk-inp"><option value="cash">💵 Cash</option><option value="upi">📱 UPI / GPay</option><option value="bank">🏦 Bank transfer</option></select></div><div class="dk-field"><label for="dk-pn">Note</label><input id="dk-pn" class="dk-inp" placeholder="e.g. UPI ref 1234"></div></div>`}
     <div class="dk-row">${x.pay?`<button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Slip (PAID)</button>${paidAmt!==C.net?`<button class="dk-btn pri" onclick="deskPay('${ksEsc(s.id)}',true)">Update payment to ${dkInr(C.net)}</button>`:''}`:`<button class="dk-btn pri" ${x.changed||cur?'disabled':''} onclick="deskPay('${ksEsc(s.id)}')">✓ Mark ${dkInr(C.net)} paid</button><button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Preview slip</button>`}<button class="dk-btn" onclick="deskStatement('${ksEsc(s.id)}')">📄 Day-by-day</button></div>
@@ -5466,7 +5466,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.5</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.25.6</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6483,7 +6483,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.5</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.25.6</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6491,11 +6491,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.25.6 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.6</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Computer Payroll: when the advance is bigger than the salary, it now says how much can be recovered and how much carries to next month (it wrongly said "Cleared"). New line "Advance still owed after this month" under the salary</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.25.5 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.25.5</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.25.5</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Computer Payroll: steps and summary cards are now 2×2 on the left, and the selected employee's panel starts at the top of the page — no scrolling to see their details</span></div>
