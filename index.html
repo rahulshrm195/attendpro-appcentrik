@@ -50,7 +50,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.26.0';
+const APP_VERSION = 'v1.26.1';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -263,6 +263,9 @@ const p = {
   payment:   (sid,month)=>`businesses/${BIZ_ID}/payments/${sid}_${month}`,
   payDraft:  (sid,month)=>`businesses/${BIZ_ID}/payroll_drafts/${sid}_${month}`,
   payHist:   ()=>`businesses/${BIZ_ID}/payment_history`,
+  // Bank details live apart from staff docs so the shop kiosk / staff phones never load them
+  staffBank: (sid)=>`businesses/${BIZ_ID}/staff_bank/${sid}`,
+  staffBanks:()=>`businesses/${BIZ_ID}/staff_bank`,
 };
 
 // ─────────────────────────────────────────────
@@ -962,7 +965,7 @@ window.ownerLogout=function(){
   localStorage.removeItem('ap_biz_cache');
   localStorage.removeItem('ap_staff_cache');
   localStorage.removeItem('ap_settings_cache');
-  BIZ_ID=null;biz={};staffArr=[];settings={};
+  BIZ_ID=null;biz={};staffArr=[];settings={};bankCache=null;
   showScreen('screen-landing');
 };
 
@@ -2563,6 +2566,7 @@ window.renderPayroll=async function(){
     out.dataset.advActual=advActual;
     out.dataset.advCarryFwd=advCarryFwd;
     out.dataset.totalOutstanding=totalOutstanding;
+    fillBankBox('pay-bank-box',sid);
     const badge=document.getElementById('pay-status-badge');
     var markBtn=document.getElementById('pay-mark-btn');
     if(markBtn){var netTxt=document.getElementById('pb-net').textContent;markBtn.textContent=payRec?'✓ Update Payment ('+netTxt+')':'✓ Mark '+netTxt+' as Paid';}
@@ -2951,6 +2955,7 @@ function renderStaffList(){
             <div style="font-weight:700;font-size:15px;">${s.name}</div>
             <div style="font-size:12px;color:var(--muted);">@${s.username} · Joined: ${s.joiningDate||'—'}</div>
             <div style="font-size:12px;color:var(--muted);">${s.email?'✉️ '+ksEsc(s.email):'No email'}</div>
+            <div style="font-size:12px;color:var(--muted);" class="staff-bank-line" data-sid="${ksEsc(s.id)}"></div>
           </div>
         </div>
         <span class="${s.active?'status-approved':'status-rejected'}">${s.active?'Active':'Inactive'}</span>
@@ -2961,6 +2966,7 @@ function renderStaffList(){
         <button class="btn btn-ghost btn-xs" onclick="editStaffName('${s.id}')">✏️ Rename</button>
         <button class="btn btn-ghost btn-xs" onclick="editJoiningDate('${s.id}')">📅 Joining</button>
         <button class="btn btn-ghost btn-xs" onclick="editStaffEmail('${s.id}')">✉️ Email</button>
+        <button class="btn btn-ghost btn-xs" onclick="editStaffBank('${s.id}')">🏦 Bank</button>
         <button class="btn btn-ghost btn-xs" onclick="toggleStaff('${s.id}')">${s.active?'Disable':'Enable'}</button>
         <button class="btn btn-ghost btn-xs" style="color:var(--red);" onclick="deleteStaff('${s.id}','${s.name}')">🗑️</button>
       </div>
@@ -2973,6 +2979,7 @@ function renderStaffList(){
     document.getElementById('staff-inactive-count').textContent=inactive.length;
     document.getElementById('staff-inactive-display').innerHTML=inactive.map(card).join('');
   }
+  loadBanks().then(B=>document.querySelectorAll('.staff-bank-line').forEach(e=>{e.innerHTML=bankLine(B[e.dataset.sid])||'No bank details';})).catch(()=>{});
 }
 
 window.editStaffName=async function(id){
@@ -3010,6 +3017,63 @@ window.editStaffEmail=async function(id){
     renderStaffList();toast(em?'✓ Email saved':'Email removed');
     return em;
   }catch(e){toast('Error: '+e.message,true);return null;}
+};
+// ── Staff bank details (owner only, kept in memory, not in this device's storage) ──
+let bankCache=null;
+async function loadBanks(){
+  if(!bankCache){const L=await fbList(p.staffBanks());bankCache={};L.forEach(b=>{bankCache[b.id]=b;});}
+  return bankCache;
+}
+function bankMask(acc){acc=String(acc||'');return acc.length>4?'••••'+acc.slice(-4):acc;}
+function bankLine(b){return b&&b.acc?'🏦 '+ksEsc(b.holder||'')+' · A/c '+bankMask(b.acc)+' · '+ksEsc(b.ifsc||''):'';}
+window.copyText=function(t,what){try{navigator.clipboard.writeText(t).then(()=>toast('✓ '+(what||'Copied')+' copied')).catch(()=>prompt('Copy:',t));}catch(e){prompt('Copy:',t);}};
+// Box with full details and copy buttons, shown when paying
+async function fillBankBox(elId,sid){
+  const el=document.getElementById(elId);if(!el)return;
+  let b=null;try{b=(await loadBanks())[sid];}catch(e){}
+  if(document.getElementById(elId)!==el)return;
+  const q=s=>ksEsc(String(s||'')).replace(/&#39;/g,"\\'");
+  el.innerHTML=b&&b.acc?`<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:13px;margin:8px 0;display:flex;flex-direction:column;gap:6px;">
+    <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">🏦 Bank transfer to</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><span>Name: <b>${ksEsc(b.holder)}</b></span><button class="btn btn-ghost btn-xs" style="width:auto" onclick="copyText('${q(b.holder)}','Name')">Copy</button></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><span>A/c no: <b style="font-variant-numeric:tabular-nums;letter-spacing:.5px">${ksEsc(b.acc)}</b></span><button class="btn btn-ghost btn-xs" style="width:auto" onclick="copyText('${q(b.acc)}','Account number')">Copy</button></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><span>IFSC: <b>${ksEsc(b.ifsc)}</b></span><button class="btn btn-ghost btn-xs" style="width:auto" onclick="copyText('${q(b.ifsc)}','IFSC')">Copy</button></div>
+  </div>`:`<div style="font-size:12px;color:var(--muted);margin:6px 0;">No bank details saved · <a href="#" style="color:var(--accent)" onclick="event.preventDefault();editStaffBank('${q(sid)}')">Add bank details</a></div>`;
+}
+window.editStaffBank=async function(sid){
+  const s=staffArr.find(x=>x.id===sid);if(!s)return;
+  let cur=null;try{cur=(await loadBanks())[sid];}catch(e){return toast('Error: '+e.message,true);}
+  cur=cur||{};
+  const old=document.getElementById('bank-box');if(old)old.remove();
+  const box=document.createElement('div');box.id='bank-box';
+  box.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  const inp=(id,lbl,val,extra)=>`<div class="form-group"><label class="form-label" for="${id}">${lbl}</label><input class="form-input" id="${id}" value="${ksEsc(val||'')}" ${extra||''}></div>`;
+  box.innerHTML=`<div style="background:var(--s1);color:var(--text);border:1px solid var(--border);border-radius:16px;max-width:420px;width:100%;padding:20px;max-height:92vh;overflow:auto;">
+    <div style="font-family:var(--fh);font-weight:800;font-size:17px;margin-bottom:12px;">🏦 Bank details — ${ksEsc(s.name)}</div>
+    ${inp('bk-holder','Account holder name (as in bank)',cur.holder||s.name,'autocomplete="off"')}
+    ${inp('bk-acc','Account number',cur.acc,'inputmode="numeric" autocomplete="off"')}
+    ${inp('bk-acc2','Re-enter account number',cur.acc,'inputmode="numeric" autocomplete="off"')}
+    ${inp('bk-ifsc','IFSC code',cur.ifsc,'autocapitalize="characters" autocomplete="off" placeholder="e.g. SBIN0001234" maxlength="11"')}
+    <div style="display:flex;gap:10px;margin-top:6px;"><button class="btn btn-primary" id="bk-save">Save</button><button class="btn btn-secondary" id="bk-cancel" style="width:auto;padding:14px 18px;">Cancel</button></div>
+    ${cur.acc?'<button class="btn btn-ghost" id="bk-del" style="margin-top:10px;color:var(--red);">Remove bank details</button>':''}</div>`;
+  document.body.appendChild(box);
+  const close=()=>box.remove();
+  box.onclick=e=>{if(e.target===box)close();};
+  box.querySelector('#bk-cancel').onclick=close;
+  const done=()=>{close();renderStaffList();const pb=document.getElementById('pay-bank-box');if(pb&&v('pay-staff-sel')===sid)fillBankBox('pay-bank-box',sid);if(document.getElementById('dk-bank'))fillBankBox('dk-bank',sid);};
+  const del=box.querySelector('#bk-del');
+  if(del)del.onclick=async()=>{if(!confirm('Remove bank details for '+s.name+'?'))return;
+    try{await deleteDoc(doc(db,p.staffBank(sid)));delete bankCache[sid];toast('Bank details removed');done();}catch(e){toast('Error: '+e.message,true);}};
+  box.querySelector('#bk-save').onclick=async()=>{
+    const holder=v('bk-holder').replace(/\s+/g,' ').trim(),acc=v('bk-acc').replace(/[\s-]/g,''),acc2=v('bk-acc2').replace(/[\s-]/g,''),ifsc=v('bk-ifsc').replace(/\s/g,'').toUpperCase();
+    if(!holder)return toast('Enter the account holder name',true);
+    if(!/^\d{9,18}$/.test(acc))return toast('Account number should be 9–18 digits',true);
+    if(acc!==acc2)return toast('The two account numbers do not match',true);
+    if(!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc))return toast('IFSC should be 11 characters, like SBIN0001234',true);
+    const rec={holder,acc,ifsc,staffId:sid,staffName:s.name};
+    try{await fbSet(p.staffBank(sid),rec);bankCache[sid]=Object.assign({id:sid},rec);toast('✓ Bank details saved');done();}
+    catch(e){toast('Error: '+e.message,true);}
+  };
 };
 window.deleteStaff=async function(id,name){
   if(!confirm(`Delete ${name}? This cannot be undone. Their attendance records will remain.`))return;
@@ -4087,6 +4151,7 @@ async function slipData(sid,mv){
   const vis=id=>{const el=document.getElementById(id);return el&&el.style.display!=='none';};
   const ml=new Date(parseInt(mv.split('-')[0]),parseInt(mv.split('-')[1])-1,1).toLocaleString('en-IN',{month:'long',year:'numeric'});
   let payRec=null;try{payRec=await fbGet(p.payment(sid,mv));}catch(e){}
+  let bank=null;if(payRec&&payRec.mode==='bank'){try{bank=(await loadBanks())[sid];}catch(e){}}
   const cfg=getSalaryCfg._cache&&getSalaryCfg._cache[sid];
   const rows=[[g('pb-base-lbl'),g('pb-base')],[g('pb-ot-lbl'),g('pb-ot')],['Sales Incentive',g('pb-incentive')]];
   if(vis('pb-woff-row'))rows.push([g('pb-woff-lbl'),g('pb-woff-bonus')]);
@@ -4100,7 +4165,7 @@ async function slipData(sid,mv){
     gross:g('pb-gross'),adv:g('pb-advance'),net:g('pb-net'),
     owed:parseInt(out&&out.dataset.totalOutstanding)||0,left:parseInt(out&&out.dataset.advCarryFwd)||0,
     notes:[vis('pb-short-row')?g('pb-short-lbl'):'',g('pb-absent-lbl')].filter(Boolean),
-    paidText:payRec?'Paid on '+payRec.date+' by '+({cash:'Cash',upi:'UPI',bank:'Bank transfer'}[payRec.mode]||payRec.mode)+(payRec.note?' ('+payRec.note+')':''):''};
+    paidText:payRec?'Paid on '+payRec.date+' by '+({cash:'Cash',upi:'UPI',bank:'Bank transfer'}[payRec.mode]||payRec.mode)+(payRec.mode==='bank'&&bank&&bank.acc?' to A/c '+bankMask(bank.acc)+' ('+bank.ifsc+')':'')+(payRec.note?' ('+payRec.note+')':''):''};
 }
 function slipEmailText(d,withPdf){
   const L=['Dear '+d.staff.name+',','','Your salary slip for '+d.ml+' from '+(biz.name||'')+(withPdf?' is attached (PDF).':'.'),''];
@@ -4112,7 +4177,7 @@ function slipEmailText(d,withPdf){
   return L.join('\n');
 }
 // The PDF uses a standard font, which has no ₹ sign — amounts are written "Rs."
-function pdfTxt(t){return String(t||'').replace(/₹\s?/g,'Rs. ').replace(/[−–—]/g,'-').replace(/✓\s?/g,'').replace(/[^\x00-\xFF]/g,'');}
+function pdfTxt(t){return String(t||'').replace(/•/g,'*').replace(/₹\s?/g,'Rs. ').replace(/[−–—]/g,'-').replace(/✓\s?/g,'').replace(/[^\x00-\xFF]/g,'');}
 let jsPdfP=null;
 function loadJsPdf(){
   if(window.jspdf)return Promise.resolve(window.jspdf);
@@ -4894,11 +4959,12 @@ function dkDetail(focusKey){
     ${C.lateD?L('Late deduction · '+C.late+' days','−'+dkInr(C.lateD)):''}
     ${L('Gross',dkInr(C.netBeforeAdv),'tot')}${L('Advance recovered','−'+dkInr(C.advActual))}${C.totalOutstanding>0?L('Advance still owed after this month',dkInr(C.advCarryFwd),C.advCarryFwd>0?'dk-acc':''):''}</div>
     <div class="dk-net"><span>Net pay${x.changed?' (before your change)':''}</span><b>${dkInr(C.net)}</b></div></div>
-  <div class="dk-sec"><h4>Pay</h4>${x.pay?'':`<div class="dk-f2"><div class="dk-field"><label for="dk-pm">Paid by</label><select id="dk-pm" class="dk-inp"><option value="cash">💵 Cash</option><option value="upi">📱 UPI / GPay</option><option value="bank">🏦 Bank transfer</option></select></div><div class="dk-field"><label for="dk-pn">Note</label><input id="dk-pn" class="dk-inp" placeholder="e.g. UPI ref 1234"></div></div>`}
+  <div class="dk-sec"><h4>Pay</h4>${x.pay?'':`<div class="dk-f2"><div class="dk-field"><label for="dk-pm">Paid by</label><select id="dk-pm" class="dk-inp"><option value="cash">💵 Cash</option><option value="upi">📱 UPI / GPay</option><option value="bank">🏦 Bank transfer</option></select></div><div class="dk-field"><label for="dk-pn">Note</label><input id="dk-pn" class="dk-inp" placeholder="e.g. UPI ref 1234"></div></div>`}<div id="dk-bank"></div>
     <div class="dk-row">${x.pay?`<button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Slip (PAID)</button>${paidAmt!==C.net?`<button class="dk-btn pri" onclick="deskPay('${ksEsc(s.id)}',true)">Update payment to ${dkInr(C.net)}</button>`:''}`:`<button class="dk-btn pri" ${x.changed||cur?'disabled':''} onclick="deskPay('${ksEsc(s.id)}')">✓ Mark ${dkInr(C.net)} paid</button><button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Preview slip</button>`}<button class="dk-btn" onclick="deskStatement('${ksEsc(s.id)}')">📄 Day-by-day</button><button class="dk-btn" onclick="deskEmailSlip('${ksEsc(s.id)}')" title="${s.email?ksEsc(s.email):'No email saved'}">✉️ Email slip</button></div>
     ${x.changed?'<span class="dk-acc" style="font-size:12px;font-weight:600">Apply or Save all first — the amounts above don\'t include your change yet.</span>':cur&&!x.pay?'<span class="dk-mute" style="font-size:12px">Pay after the month ends.</span>':''}</div>`;
   if(focusKey){const el=dkEl(focusKey==='inc'?'dk-dinc':'dk-dadv');if(el&&document.activeElement&&document.activeElement.closest&&!document.activeElement.closest('#dk-det')){/* typed in the table: leave focus there */}
     else if(el){el.focus();const v=el.value;el.value='';el.value=v;}}
+  fillBankBox('dk-bank',s.id);
 }
 window.deskStatement=function(sid){const x=(DK.payRows||[]).find(r=>r.s.id===sid);if(!x)return;if(x.changed)return toast('Apply or Save all first so the statement includes your change',true);
   openPayStatement(sid,DK.mv,{payRec:x.pay,incentive:x.saved.inc,advRecover:x.saved.adv});};
@@ -4945,13 +5011,13 @@ async function dkStaff(){
   ${L.map((s,i)=>{const c=cfgs[i]||{},b=leds[i]&&leds[i].balance>0?leds[i].balance:0;return `<tr class="k" onclick="deskStaffOpen('${ksEsc(s.id)}')"><td><div class="dk-who">${dkAv(s.id)}<b>${ksEsc(s.name)}</b></div></td><td class="dk-mute">@${ksEsc(s.username||'')}</td><td>${ksEsc(s.joiningDate||'—')}</td><td class="r">${c.base?dkInr(c.base):'<span class="dk-bad">not set</span>'}</td><td>${ksEsc(dutyText(c))}<div class="dk-mute" style="font-size:11.5px">paid on ${c.standardHours||calcAutoStdHoursFromCfg(c)}h/day</div></td><td>${c.weeklyOff>=0?DOW_SHORT[c.weeklyOff]:'—'}</td><td class="r">${b?'<span class="dk-acc">'+dkInr(b)+'</span>':'—'}</td><td class="r"><button class="dk-btn sm">Open</button></td></tr>`;}).join('')||'<tr><td colspan="8" class="dk-empty">Nobody here</td></tr>'}</tbody></table></div></div>`;
 }
 window.deskStaffOpen=function(sid){const s=staffArr.find(x=>x.id===sid);if(!s)return;const q=`'${ksEsc(s.id)}'`;
-  dkModal(`<header>${dkAv(s.id)}<div class="dk-sp"><h3>${ksEsc(s.name)}</h3><div class="dk-mute">@${ksEsc(s.username||'')} · joined ${ksEsc(s.joiningDate||'—')} · ${s.active?'Active':'Inactive'}</div><div class="dk-mute">${s.email?'✉️ '+ksEsc(s.email):'No email saved'}</div></div><button class="dk-xb" onclick="dkCloseModal()" aria-label="Close">×</button></header>
+  dkModal(`<header>${dkAv(s.id)}<div class="dk-sp"><h3>${ksEsc(s.name)}</h3><div class="dk-mute">@${ksEsc(s.username||'')} · joined ${ksEsc(s.joiningDate||'—')} · ${s.active?'Active':'Inactive'}</div><div class="dk-mute">${s.email?'✉️ '+ksEsc(s.email):'No email saved'}</div><div class="dk-mute" id="dk-sbank"></div></div><button class="dk-xb" onclick="dkCloseModal()" aria-label="Close">×</button></header>
   <div class="bd"><div class="dk-grid2">
     <button class="dk-btn" onclick="dkCloseModal();openSalarySettings(${q})">₹ Salary & shift settings</button><button class="dk-btn" onclick="dkCloseModal();editPin(${q})">Change PIN</button>
     <button class="dk-btn" onclick="dkCloseModal();editStaffName(${q})">✏️ Rename</button><button class="dk-btn" onclick="dkCloseModal();editJoiningDate(${q})">📅 Joining date</button>
-    <button class="dk-btn" onclick="dkCloseModal();editStaffEmail(${q})">✉️ ${s.email?'Change email':'Add email'}</button>
+    <button class="dk-btn" onclick="dkCloseModal();editStaffEmail(${q})">✉️ ${s.email?'Change email':'Add email'}</button><button class="dk-btn" onclick="dkCloseModal();editStaffBank(${q})">🏦 Bank details</button>
     <button class="dk-btn" onclick="dkCloseModal();deskGo('payroll',{sel:${q}})">See payroll</button><button class="dk-btn" onclick="dkCloseModal();DK.advSel=${q};deskGo('advances')">See advances</button></div></div>
-  <footer><button class="dk-btn ${s.active?'red':''}" onclick="dkCloseModal();toggleStaff(${q})">${s.active?'Disable':'Enable'}</button><button class="dk-btn red" onclick="dkCloseModal();deleteStaff(${q},'${ksEsc(s.name).replace(/'/g,'&#39;')}')">🗑️ Delete</button><span class="dk-sp"></span><button class="dk-btn" onclick="dkCloseModal()">Close</button></footer>`);};
+  <footer><button class="dk-btn ${s.active?'red':''}" onclick="dkCloseModal();toggleStaff(${q})">${s.active?'Disable':'Enable'}</button><button class="dk-btn red" onclick="dkCloseModal();deleteStaff(${q},'${ksEsc(s.name).replace(/'/g,'&#39;')}')">🗑️ Delete</button><span class="dk-sp"></span><button class="dk-btn" onclick="dkCloseModal()">Close</button></footer>`);loadBanks().then(B=>{const e=dkEl('dk-sbank');if(e)e.innerHTML=bankLine(B[sid])||'No bank details';}).catch(()=>{});};
 window.deskAddStaff=function(){dkModal(`<header><div class="dk-sp"><h3>Add staff</h3></div><button class="dk-xb" onclick="dkCloseModal()" aria-label="Close">×</button></header>
   <div class="bd"><div class="dk-field"><label for="dk-an">Full name</label><input id="dk-an" class="dk-inp" placeholder="e.g. Ramesh Kumar"></div>
   <div class="dk-f2"><div class="dk-field"><label for="dk-au">Username</label><input id="dk-au" class="dk-inp" autocapitalize="off" placeholder="ramesh"></div><div class="dk-field"><label for="dk-ap">4-digit PIN</label><input id="dk-ap" class="dk-inp" type="tel" maxlength="4" placeholder="1234"></div></div>
@@ -5662,7 +5728,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.26.0</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.26.1</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6038,6 +6104,7 @@ body.dk-body .sheet{border-radius:20px}
           <div class="form-group"><label class="form-label">Payment Mode</label>
             <select class="form-input form-select" id="pay-mode"><option value="cash">💵 Cash</option><option value="upi">📱 UPI / GPay</option><option value="bank">🏦 Bank Transfer</option></select></div>
           <div class="form-group"><label class="form-label">Note (optional)</label><input class="form-input" id="pay-note" placeholder="e.g. GPay, UPI ref 1234"></div>
+          <div id="pay-bank-box"></div>
           <div style="display:flex;gap:10px;">
             <button class="btn btn-primary" id="pay-mark-btn" onclick="markAsPaid()">✓ Mark as Paid</button>
             <button class="btn btn-secondary" onclick="printSalarySlip()" style="width:auto;padding:14px 18px;">🖨️ Slip</button>
@@ -6681,7 +6748,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.26.0</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.26.1</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6689,11 +6756,22 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.26.1 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.26.1</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Staff bank details: account holder name, account number (entered twice to avoid mistakes) and IFSC — 🏦 Bank button on each staff member</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll shows the bank details with Copy buttons when paying, and slips paid by bank transfer show the account (last 4 digits)</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.26.0 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.26.0</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.26.0</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Email slip now makes a PDF salary slip. "Share PDF → Mail / Gmail" attaches it for you (the staff email is copied to paste in To). Where sharing isn't available, "Download PDF + open email" saves it and opens your mail app</span></div>
