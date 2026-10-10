@@ -31,12 +31,22 @@ differently, look for the closest match.
 
    Then click **Deploy**.
 4. **Secrets** — open the new Worker → **Settings → Variables and Secrets** →
-   add two **Secrets**:
+   **+ Add variable** (top right), twice. Set **Type** to **Secret** both
+   times (plain "Text" variables are wiped by the next deploy from GitHub):
    - `API_KEY` = the password from step 2
-   - `FIREBASE_SERVICE_ACCOUNT` = paste the whole contents of the `.json` file
-   Then redeploy (Deployments → ⋯ → Redeploy).
-5. **Check** — open `https://<your-worker>.workers.dev/health` in a browser. It
-   should say `{"ok": true}`.
+   - `FIREBASE_SERVICE_ACCOUNT` = open the `.json` file in a text editor,
+     select all and paste the whole thing, from the first `{` to the last `}`
+
+   Saving each secret deploys the Worker by itself. Leave
+   `FIREBASE_PROJECT_ID` and `TZ_OFFSET` as they are (they come from
+   `wrangler.toml`).
+5. **Check** — the Worker's address is shown on its **Overview** under
+   **Domains and routes → workers.dev**:
+   `https://attendpro-api.<your-account>.workers.dev`. Open
+   `…workers.dev/health` in a browser; it should say `{"ok": true}`. (If
+   workers.dev shows **Disabled**, push any change to `main` so the Worker
+   redeploys with `workers_dev = true`, or turn it on under **Settings →
+   Domains & Routes**.)
 
 To change the key later, edit the `API_KEY` secret and redeploy. Every future
 push to `main` redeploys the Worker automatically.
