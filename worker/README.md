@@ -50,11 +50,11 @@ For automating month end with an AI agent, see **[AGENT.md](AGENT.md)**.
 
 ## Owner notifications (push)
 
-Once the Worker is deployed, it checks every 2 minutes (cron in
+Once the Worker is deployed, it checks every 5 minutes (cron in
 `wrangler.toml`) and sends push notifications to the owner's phones and
 computers:
 
-- **New leave / advance requests**, as soon as they arrive.
+- **New leave / advance requests**, within about 5 minutes.
 - **Who is in the store** at a set time (default 11:20): in, not in yet,
   came and went out, off (weekly off / leave).
 - **Day-end summary** once everyone who came has punched out (not before
@@ -68,7 +68,7 @@ push key; each owner device re-registers by itself the next time the owner
 panel is opened.)
 
 In the app: **Settings → Notifications → Turn on for this device**, then
-**Send test** (arrives within 2 minutes). Times and which alerts to send are
+**Send test** (arrives within 5 minutes). Times and which alerts to send are
 set there too. Android: Chrome. iPhone: Add to Home Screen first, then turn
 it on from the home-screen app. Only owner devices get alerts.
 

@@ -561,7 +561,7 @@ async function giveAdvance(ctx, bizId) {
   }
 }
 
-// Run the notification check now (the cron does this every 2 minutes)
+// Run the notification check now (the cron does this every 5 minutes)
 async function notifyRun(ctx) {
   return json({ ok: true, report: await runNotifications(ctx.env, new Date(), { db: ctx.db }) });
 }
