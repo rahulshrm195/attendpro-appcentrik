@@ -84,6 +84,12 @@ computers:
 - **Day-end summary** once everyone who came has punched out (not before
   20:00 by default): full day, short day, absent. At the latest time
   (default 23:30) it is sent anyway, listing anyone with no punch-out.
+- **Every punch in / out** (optional, off by default): one alert per punch,
+  per staff member and session. The staff phone or kiosk pings
+  `POST /ping/punch {"biz": "<id>"}` right after saving the punch, so it
+  arrives within seconds; the 5-minute check sends anything a ping missed
+  (e.g. punches added by the owner). `/ping/punch` needs no key: it only
+  makes the Worker do now what the cron would do anyway.
 
 Nothing extra to set up: the Worker makes its own push (VAPID) key on the
 first run and keeps it in Firestore at `push_config/vapid`, the private part

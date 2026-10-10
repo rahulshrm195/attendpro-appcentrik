@@ -1,5 +1,5 @@
 // AttendPro API — Cloudflare Worker
-// All routes except /health need:  Authorization: Bearer <API_KEY>
+// All routes except /health and /ping/punch need:  Authorization: Bearer <API_KEY>
 // See worker/README.md for setup and endpoint reference.
 
 import { createFirestore, newId, FirestoreError } from './firestore.js';
@@ -9,15 +9,17 @@ import {
 } from './attendance.js';
 import { slipHtml, slipsDocument } from './slip.js';
 import { computePayroll, defaultSalaryCfg } from './payroll.js';
-import { runNotifications } from './notify.js';
+import { runNotifications, runPunchPing } from './notify.js';
 
 export default {
   // Cron (wrangler.toml [triggers]): owner push notifications
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runNotifications(env, new Date(event.scheduledTime)).catch((e) => console.error('notify', e)));
   },
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
+      const path = new URL(request.url).pathname.replace(/\/+$/, '');
+      if (path === '/ping/punch') return await punchPing(request, env, ctx);
       return await handle(request, env);
     } catch (e) {
       if (e instanceof HttpError) return json({ error: { code: e.code, message: e.message } }, e.status);
@@ -562,6 +564,32 @@ async function giveAdvance(ctx, bizId) {
 }
 
 // Run the notification check now (the cron does this every 5 minutes)
+// POST /ping/punch {"biz": "<id>"} — sent (navigator.sendBeacon) by a staff
+// phone or kiosk right after a punch is saved. No key: it only makes the
+// Worker do now what its cron would do within 5 minutes (send that
+// business's new punches, if the owner turned punch alerts on).
+// Pings for a business that arrive while one runs are folded into one rerun.
+const punchRuns = new Map();
+async function punchPing(request, env, ctx) {
+  const cors = { 'Access-Control-Allow-Origin': '*' };
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...cors, 'Access-Control-Allow-Methods': 'POST', 'Access-Control-Allow-Headers': 'Content-Type' } });
+  if (request.method !== 'POST') return new Response('POST only', { status: 405, headers: cors });
+  const body = await request.json().catch(() => null);
+  const biz = body && typeof body.biz === 'string' && new RegExp(`^${ID}$`).test(body.biz) ? body.biz : null;
+  if (!biz) return new Response('bad request', { status: 400, headers: cors });
+  if (punchRuns.has(biz)) { punchRuns.get(biz).again = true; return new Response(null, { status: 202, headers: cors }); }
+  const run = { again: false };
+  punchRuns.set(biz, run);
+  const work = (async () => {
+    try {
+      do { run.again = false; await runPunchPing(env, biz); } while (run.again);
+    } catch (e) { console.error('punch ping', biz, e); }
+    finally { punchRuns.delete(biz); }
+  })();
+  if (ctx && ctx.waitUntil) ctx.waitUntil(work); else await work;
+  return new Response(null, { status: 202, headers: cors });
+}
+
 async function notifyRun(ctx) {
   return json({ ok: true, report: await runNotifications(ctx.env, new Date(), { db: ctx.db }) });
 }
