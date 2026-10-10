@@ -18,7 +18,7 @@
   - Classic render functions call `deskPing()` so the desk refreshes.
 - `sw.js` — service worker (network-first cache).
 - `worker/` — Cloudflare Worker API (not deployed yet — owner does the
-  one-time setup in worker/README.md). Its cron (every 2 min) sends the
+  one-time setup in worker/README.md). Its cron (every 5 min) sends the
   owner's push notifications: `worker/src/notify.js` (requests, morning
   "who's in", day-end summary), `worker/src/webpush.js` (VAPID + encryption).
   App side: Settings → Notifications (`renderOwnerPush`, `enableOwnerPush`).

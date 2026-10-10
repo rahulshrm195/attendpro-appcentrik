@@ -1,4 +1,4 @@
-// Owner notifications, run by the Worker's cron (every 2 minutes):
+// Owner notifications, run by the Worker's cron (every 5 minutes):
 //   • new leave / advance requests
 //   • morning "who is in the store" (default 11:20)
 //   • day-end summary once everyone has punched out (or at the latest time,
