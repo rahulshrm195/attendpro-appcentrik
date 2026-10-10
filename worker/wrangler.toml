@@ -1,6 +1,8 @@
 name = "attendpro-api"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
+# Public address https://attendpro-api.<account>.workers.dev (for /health and the agent API)
+workers_dev = true
 
 # Owner push notifications (requests, morning "who's in", day end) — see src/notify.js
 [triggers]
