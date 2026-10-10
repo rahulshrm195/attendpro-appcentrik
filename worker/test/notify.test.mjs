@@ -57,6 +57,16 @@ before(async () => {
   ]);
 });
 
+test('first run makes the VAPID key even before any business has push on', async () => {
+  const env0 = { ...env, FIREBASE_PROJECT_ID: 'demo-notify-boot' };
+  const db0 = createFirestore(env0);
+  await fetch(`http://${env.FIRESTORE_EMULATOR_HOST}/emulator/v1/projects/demo-notify-boot/databases/(default)/documents`, { method: 'DELETE' });
+  await db0.commit([{ set: 'businesses/X', data: { name: 'Push not on yet' } }]);
+  assert.deepEqual(await runNotifications(env0, at('10:00'), { send }), []);
+  const v = await db0.get('push_config/vapid');
+  assert.ok(v && v.data.publicKey, 'public key stored for the app');
+});
+
 test('payload encryption matches the RFC 8291 example', async () => {
   const out = await encryptPayload(
     { p256dh: 'BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4', auth: 'BTBZMqHH6r4Tts7J_aSIgg' },

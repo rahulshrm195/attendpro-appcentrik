@@ -42,9 +42,10 @@ export async function runNotifications(env, now = new Date(), opts = {}) {
   const db = opts.db || createFirestore(env);
   const tz = env.TZ_OFFSET || '+05:30';
   const send = opts.send || sendPush;
+  // Key first: the app needs push_config/vapid before any business can turn push on
+  const vapid = await ensureVapid(db, env.API_KEY);
   const bizDocs = await db.list('businesses', [['pushEnabled', '==', true]]);
   if (!bizDocs.length) return [];
-  const vapid = await ensureVapid(db, env.API_KEY);
   const report = [];
   for (const b of bizDocs) {
     try {
