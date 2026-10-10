@@ -3,13 +3,17 @@
 //   • morning "who is in the store" (default 11:20)
 //   • day-end summary once everyone has punched out (or at the latest time,
 //     listing anyone who never punched out)
+//   • optional: every punch in / out. The punching device pings /ping/punch
+//     so these go out within seconds; the cron picks up anything missed.
 //
 // Settings live in settings/main → notif (edited in the app's Settings →
 // Notifications). Owner devices register in businesses/{biz}/push_subs, and
 // the app marks the business doc pushEnabled so the cron skips the others.
-// What was already sent is kept in businesses/{biz}/push_state/main.
+// What was already sent is kept in businesses/{biz}/push_state/main (punches:
+// push_state/punches, claimed with a precondition so the cron and a ping
+// never send the same punch twice).
 
-import { createFirestore } from './firestore.js';
+import { createFirestore, FirestoreError } from './firestore.js';
 import { ensureVapid, sendPush } from './webpush.js';
 import { todayStr, localHHMM, isLateAt, minsToHM, pad } from './attendance.js';
 import { defaultSalaryCfg } from './payroll.js';
@@ -18,14 +22,18 @@ export const NOTIF_DEFAULTS = {
   requests: true,
   morning: true, morningAt: '11:20',
   dayEnd: true, dayEndFrom: '20:00', dayEndLatest: '23:30',
+  punches: false,
 };
 const SUBJECT = 'https://attendpro.appcentrik.in';
 const FULL_DAY_GRACE_MINS = 15;   // this close to the standard hours still counts as a full day
 const MORNING_WINDOW_MINS = 120;  // morning message is skipped if the cron was down longer than this
+const PUNCH_FIRST_SEEN_MINS = 30; // a record seen for the first time today: only punches this recent are sent
+const PUNCH_GROUP_OVER = 4;       // more new punches than this in one go: one combined message
 
 const P = {
   settings: (b) => `businesses/${b}/settings/main`,
   state: (b) => `businesses/${b}/push_state/main`,
+  punchState: (b) => `businesses/${b}/push_state/punches`,
   subs: (b) => `businesses/${b}/push_subs`,
   sub: (b, id) => `businesses/${b}/push_subs/${id}`,
   requests: (b) => `businesses/${b}/requests`,
@@ -112,23 +120,131 @@ async function runBusiness({ db, tz, now, bizId, biz, vapid, send }) {
     }
   }
 
-  let sent = 0, removed = 0;
-  if (messages.length) {
-    const subs = await db.list(P.subs(bizId));
-    for (const msg of messages) {
-      for (const s of subs) {
-        if (s.gone) continue;
-        try {
-          const r = await send(s.data, msg, vapid, { subject: SUBJECT, ttl: msg.ttl || 6 * 3600 });
-          if (r.ok) sent++;
-          else if (r.gone) { s.gone = true; removed++; await db.commit([{ delete: P.sub(bizId, s.id) }]); }
-          else console.warn('push failed', bizId, r.status);
-        } catch (e) { console.warn('push error', bizId, e.message); }
-      }
-    }
-  }
+  if (prefs.punches) messages.push(...await claimPunches(db, bizId, { tz, now }));
+
+  const { sent, removed } = await deliver(db, bizId, messages, vapid, send);
   if (Object.keys(next).length) await db.commit([{ set: P.state(bizId), data: next, merge: true }]);
   return { messages: messages.map((m) => m.title), sent, removed };
+}
+
+async function deliver(db, bizId, messages, vapid, send) {
+  let sent = 0, removed = 0;
+  if (!messages.length) return { sent, removed };
+  const subs = await db.list(P.subs(bizId));
+  for (const msg of messages) {
+    for (const s of subs) {
+      if (s.gone) continue;
+      try {
+        const r = await send(s.data, msg, vapid, { subject: SUBJECT, ttl: msg.ttl || 6 * 3600 });
+        if (r.ok) sent++;
+        else if (r.gone) { s.gone = true; removed++; await db.commit([{ delete: P.sub(bizId, s.id) }]); }
+        else console.warn('push failed', bizId, r.status);
+      } catch (e) { console.warn('push error', bizId, e.message); }
+    }
+  }
+  return { sent, removed };
+}
+
+// ── Every punch in / out ──
+
+/** Ping from a device that just saved a punch: send that business's new punches now */
+export async function runPunchPing(env, bizId, now = new Date(), opts = {}) {
+  const db = opts.db || createFirestore(env);
+  const settDoc = await db.get(P.settings(bizId));
+  const prefs = { ...NOTIF_DEFAULTS, ...((settDoc && settDoc.data.notif) || {}) };
+  if (!prefs.punches) return { messages: [], sent: 0 };
+  const messages = await claimPunches(db, bizId, { tz: env.TZ_OFFSET || '+05:30', now });
+  if (!messages.length) return { messages: [], sent: 0 };
+  const vapid = await ensureVapid(db, env.API_KEY);
+  const { sent, removed } = await deliver(db, bizId, messages, vapid, opts.send || sendPush);
+  return { messages: messages.map((m) => m.title), sent, removed };
+}
+
+const CLAIM_LOST = new Set(['FAILED_PRECONDITION', 'ALREADY_EXISTS', 'NOT_FOUND']);
+
+/**
+ * Finds today's punches not sent yet and marks them sent before returning
+ * them. push_state/punches keeps, per attendance record, how many punch
+ * events (ins + outs) were already handled. The write is conditional, so of
+ * two runs at the same time only one gets the punches; the other re-reads.
+ */
+async function claimPunches(db, bizId, { tz, now }) {
+  const today = todayStr(tz, now);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const [stDoc, recs] = await Promise.all([
+      db.get(P.punchState(bizId)),
+      db.list(P.recs(bizId), [['date', '==', today]]),
+    ]);
+    const prev = stDoc && stDoc.data.day === today ? (stDoc.data.seen || {}) : null;
+    const seen = {};
+    const fresh = [];
+    for (const r of recs) {
+      const events = punchEvents(r.data);
+      seen[r.id] = events.length;
+      const had = prev ? prev[r.id] : undefined;
+      if (had === undefined) {
+        const since = now.getTime() - PUNCH_FIRST_SEEN_MINS * 60000;
+        fresh.push(...events.filter((e) => Date.parse(e.iso) >= since).map((e) => ({ ...e, recId: r.id, rec: r.data })));
+      } else if (events.length > had) {
+        fresh.push(...events.slice(had).map((e) => ({ ...e, recId: r.id, rec: r.data })));
+      }
+    }
+    const same = prev && Object.keys(seen).length === Object.keys(prev).length && Object.keys(seen).every((k) => prev[k] === seen[k]);
+    if (same) return [];
+    const write = { set: P.punchState(bizId), data: { day: today, seen } };
+    if (stDoc) write.ifUpdateTime = stDoc.updateTime; else write.ifMissing = true;
+    try {
+      await db.commit([write]);
+    } catch (e) {
+      if (e instanceof FirestoreError && CLAIM_LOST.has(e.code)) continue; // another run got there first
+      throw e;
+    }
+    fresh.sort((a, b) => Date.parse(a.iso) - Date.parse(b.iso));
+    return punchMessages(fresh, tz);
+  }
+  return [];
+}
+
+/** A record's punches in order: in, out, in, out… */
+function punchEvents(rec) {
+  const out = [];
+  const sessions = Array.isArray(rec.sessions) ? rec.sessions.filter((x) => x && x.inISO) : [];
+  sessions.forEach((x, i) => {
+    out.push({ kind: 'in', iso: x.inISO, i, sess: x });
+    if (x.outISO) out.push({ kind: 'out', iso: x.outISO, i, sess: x });
+  });
+  return out;
+}
+
+export function punchMessages(events, tz) {
+  if (!events.length) return [];
+  const name = (e) => e.rec.staffName || 'Staff';
+  const line = (e) => `${e.kind === 'in' ? '🟢' : '🔴'} ${name(e)} ${e.kind} ${t12(e.iso, tz)}`;
+  if (events.length > PUNCH_GROUP_OVER) {
+    return [{ title: `👥 ${events.length} punches`, body: events.map(line).join('\n'), tag: 'punches', url: './?open=today', ttl: 3600 }];
+  }
+  return events.map((e) => {
+    const notes = [];
+    if (e.kind === 'in') {
+      if (e.i > 0) notes.push(`Back in (session ${e.i + 1})`);
+      else if (e.rec.late) notes.push('Late');
+    } else {
+      const mins = e.sess.workedMins || Math.round((Date.parse(e.sess.outISO) - Date.parse(e.sess.inISO)) / 60000);
+      notes.push('Worked ' + minsToHM(mins));
+      const sessions = (e.rec.sessions || []).filter((x) => x && x.inISO);
+      if (sessions.length > 1 && e.i === sessions.length - 1) {
+        const total = sessions.reduce((a, x) => a + (x.outISO ? (x.workedMins || 0) : 0), 0);
+        notes.push('today ' + minsToHM(total));
+      }
+    }
+    if (e.sess.source === 'kiosk') notes.push('kiosk');
+    if (e.sess.gpsFlag) notes.push('⚠️ away from the store');
+    return {
+      title: `${line(e)}`,
+      body: notes.join(' · ') || (e.kind === 'in' ? 'Punched in' : 'Punched out'),
+      tag: `punch-${e.recId}-${e.i}-${e.kind}`, url: './?open=today', ttl: 3600,
+    };
+  });
 }
 
 // ── Today's data ──

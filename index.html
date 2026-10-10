@@ -50,7 +50,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.27.1';
+const APP_VERSION = 'v1.28.0';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -184,10 +184,19 @@ function recCacheSet(sid,date,rec){
     old.forEach(function(k){localStorage.removeItem(k);});
   }catch(e){}
 })();
+// Tell the AttendPro server a punch was saved, so the owner's punch alert
+// (Settings → Notifications) goes out now instead of at its next 5-minute check
+const AP_API='https://attendpro-api.rahulshrm195.workers.dev';
+function pingPunch(key){
+  var m=/^businesses\/([^/]+)\/attendance\//.exec(key);
+  if(!m)return;
+  try{if(navigator.sendBeacon)navigator.sendBeacon(AP_API+'/ping/punch',JSON.stringify({biz:m[1]}));}catch(e){}
+}
 function pqSend(item){
   punchInflight[item.key]=item.v;
   return fbSet(item.key,cleanCopy(item.data)).then(function(){
     pqDrop(item);
+    pingPunch(item.key);
   }).finally(function(){
     if(punchInflight[item.key]===item.v)delete punchInflight[item.key];
   });
@@ -4647,7 +4656,7 @@ function sendNotif(title, body, tag='ap-notif'){
 //  The AttendPro server (worker/, cron every 5 min) sends them. This device
 //  registers in push_subs with the server's public key from push_config/vapid.
 // ─────────────────────────────────────────────
-const NOTIF_DEFAULTS={requests:true,morning:true,morningAt:'11:20',dayEnd:true,dayEndFrom:'20:00',dayEndLatest:'23:30'};
+const NOTIF_DEFAULTS={requests:true,morning:true,morningAt:'11:20',dayEnd:true,dayEndFrom:'20:00',dayEndLatest:'23:30',punches:false};
 function pushSupported(){return 'serviceWorker' in navigator&&'PushManager' in window&&'Notification' in window;}
 function isIOS(){return /iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);}
 function isStandalone(){return window.matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;}
@@ -4664,7 +4673,7 @@ async function savePushSub(sub,vapidKey){
 window.renderOwnerPush=async function(){
   const st=document.getElementById('np-status');if(!st)return;
   const n=Object.assign({},NOTIF_DEFAULTS,settings.notif||{});
-  document.getElementById('np-req').checked=n.requests;document.getElementById('np-morning').checked=n.morning;document.getElementById('np-dayend').checked=n.dayEnd;
+  document.getElementById('np-req').checked=n.requests;document.getElementById('np-morning').checked=n.morning;document.getElementById('np-dayend').checked=n.dayEnd;document.getElementById('np-punch').checked=!!n.punches;
   document.getElementById('np-morning-at').value=n.morningAt;document.getElementById('np-dayend-from').value=n.dayEndFrom;document.getElementById('np-dayend-latest').value=n.dayEndLatest;
   const on=document.getElementById('np-on'),off=document.getElementById('np-off'),te=document.getElementById('np-test');
   const show=(a,b,c)=>{on.style.display=a?'':'none';off.style.display=b?'':'none';te.style.display=c?'':'none';};
@@ -4704,7 +4713,7 @@ window.testOwnerPush=async function(){
 window.saveOwnerPushPrefs=async function(){
   const t=id=>document.getElementById(id).value;
   const n={requests:document.getElementById('np-req').checked,morning:document.getElementById('np-morning').checked,morningAt:t('np-morning-at')||NOTIF_DEFAULTS.morningAt,
-    dayEnd:document.getElementById('np-dayend').checked,dayEndFrom:t('np-dayend-from')||NOTIF_DEFAULTS.dayEndFrom,dayEndLatest:t('np-dayend-latest')||NOTIF_DEFAULTS.dayEndLatest};
+    dayEnd:document.getElementById('np-dayend').checked,punches:document.getElementById('np-punch').checked,dayEndFrom:t('np-dayend-from')||NOTIF_DEFAULTS.dayEndFrom,dayEndLatest:t('np-dayend-latest')||NOTIF_DEFAULTS.dayEndLatest};
   if(n.dayEndLatest<=n.dayEndFrom)return toast('"Latest" must be after "Not before"',true);
   try{await fbSet(p.settings(),{notif:n});settings.notif=n;ls.set('ap_settings_cache',settings);toast('✓ Notification settings saved');}catch(e){toast('Error: '+e.message,true);}
 };
@@ -5816,7 +5825,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.27.1</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.28.0</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6296,6 +6305,7 @@ body.dk-body .sheet{border-radius:20px}
           <div class="form-group"><label class="form-label">Not before</label><input type="time" class="form-input" id="np-dayend-from" style="max-width:160px"></div>
           <div class="form-group"><label class="form-label">Latest</label><input type="time" class="form-input" id="np-dayend-latest" style="max-width:160px"></div>
         </div>
+        <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:12px;font-size:14px;"><input type="checkbox" id="np-punch" style="margin-top:3px"><span><b>Every punch in &amp; out</b><br><span style="font-size:12px;color:var(--muted)">Each staff member, every session, a few seconds after the punch (up to 5 minutes if their internet is slow). Many alerts in a day — turn off when you don't need it.</span></span></label>
         <button class="btn btn-primary btn-sm" onclick="saveOwnerPushPrefs()">Save</button>
         <p style="font-size:12px;color:var(--muted);margin-top:10px;">Alerts go to every phone or computer where you turned them on. Staff don't get these.</p>
       </div>
@@ -6864,7 +6874,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.27.1</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.28.0</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6872,11 +6882,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.28.0 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.28.0</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>New option in Settings → Notifications: an alert for every punch in and out, for each staff member and session, within seconds of the punch (off by default)</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.27.1 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.27.1</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.27.1</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Notification server checks every 5 minutes instead of 2 (less work; request alerts arrive within about 5 minutes, 11:20 message still on time)</span></div>

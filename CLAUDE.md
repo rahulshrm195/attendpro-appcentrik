@@ -21,7 +21,9 @@
   https://attendpro-api.rahulshrm195.workers.dev (deployed 2026-10-10;
   every push to `main` redeploys it via Cloudflare's GitHub integration). Its cron (every 5 min) sends the
   owner's push notifications: `worker/src/notify.js` (requests, morning
-  "who's in", day-end summary), `worker/src/webpush.js` (VAPID + encryption).
+  "who's in", day-end summary, optional every punch in/out — the app pings
+  `/ping/punch` after saving a punch (`pingPunch` in index.html) so it is
+  sent within seconds), `worker/src/webpush.js` (VAPID + encryption).
   App side: Settings → Notifications (`renderOwnerPush`, `enableOwnerPush`).
   Tests: `cd worker && npm test` (Firestore emulator).
 

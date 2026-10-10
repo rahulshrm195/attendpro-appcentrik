@@ -4,7 +4,7 @@ import { test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { createFirestore } from '../src/firestore.js';
 import { encryptPayload, vapidJwt, ensureVapid, b64urlEncode, b64urlDecode } from '../src/webpush.js';
-import { runNotifications } from '../src/notify.js';
+import { runNotifications, runPunchPing } from '../src/notify.js';
 import worker from '../src/index.js';
 
 const env = {
@@ -159,4 +159,49 @@ test('day end at the latest time lists missed punch-outs; test button; other bus
 test('POST /notify/run needs the API key', async () => {
   const res = await worker.fetch(new Request('https://api.test/notify/run', { method: 'POST', body: '{}' }), env);
   assert.equal(res.status, 401);
+});
+
+test('punch alerts: each new punch in / out once, from the ping or the cron', async () => {
+  const envP = { ...env, FIREBASE_PROJECT_ID: 'demo-notify-punch' };
+  const dbP = createFirestore(envP);
+  await fetch(`http://${env.FIRESTORE_EMULATOR_HOST}/emulator/v1/projects/demo-notify-punch/databases/(default)/documents`, { method: 'DELETE' });
+  const Q = 'businesses/P1';
+  const A = `${Q}/attendance/S1_${D}`;
+  await dbP.commit([
+    { set: Q, data: { name: 'SR Shoes', pushEnabled: true } },
+    { set: `${Q}/settings/main`, data: { notif: { punches: false } } },
+    { set: `${Q}/push_subs/a`, data: { endpoint: 'https://push.example/a', p256dh: 'x', auth: 'y' } },
+    { set: A, data: { ...rec('S1', 'Mukesh Varma', [sess('10:14', null)]), late: true } },
+    { set: `${Q}/attendance/S2_${D}`, data: rec('S2', 'Yogesh Patil', [sess('08:00', null)]) },
+  ]);
+  const ping = (hhmm) => runPunchPing(envP, 'P1', at(hhmm), { send });
+  assert.deepEqual((await ping('10:15')).messages, [], 'off by default');
+  await dbP.commit([{ set: `${Q}/settings/main`, data: { notif: { punches: true } }, merge: true }]);
+
+  await ping('10:15');
+  let got = take();
+  assert.deepEqual(got.map((m) => [m.title, m.body]), [['🟢 Mukesh Varma in 10:14am', 'Late']], 'Yogesh 08:00 is too old to announce');
+  await ping('10:16');
+  assert.equal(take().length, 0, 'not twice');
+
+  await dbP.commit([{ set: A, data: rec('S1', 'Mukesh Varma', [sess('10:14', '13:00'), sess('14:00', null)]) }]);
+  await runNotifications(envP, at('14:03'), { send }); // the cron also picks punches up
+  got = take();
+  assert.deepEqual(got.map((m) => [m.title, m.body]), [
+    ['🔴 Mukesh Varma out 1:00pm', 'Worked 2h 46m'],
+    ['🟢 Mukesh Varma in 2:00pm', 'Back in (session 2)'],
+  ]);
+  await dbP.commit([{ set: A, data: rec('S1', 'Mukesh Varma', [sess('10:14', '13:00'), sess('14:00', '21:00')]) }]);
+  await Promise.all([ping('21:00'), ping('21:00'), runNotifications(envP, at('21:00'), { send })]);
+  got = take();
+  assert.deepEqual(got.map((m) => m.body), ['Worked 7h 0m · today 9h 46m'], 'three runs at once: sent once');
+});
+
+test('POST /ping/punch needs no key, checks the body and answers 202', async () => {
+  const req = (body) => new Request('https://api.test/ping/punch', { method: 'POST', body });
+  assert.equal((await worker.fetch(req('nope'), env)).status, 400);
+  assert.equal((await worker.fetch(req(JSON.stringify({ biz: '../x' })), env)).status, 400);
+  const res = await worker.fetch(req(JSON.stringify({ biz: 'N2' })), env); // punch alerts off there: nothing to do
+  assert.equal(res.status, 202);
+  assert.equal(res.headers.get('Access-Control-Allow-Origin'), '*');
 });
