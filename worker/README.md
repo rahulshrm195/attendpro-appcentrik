@@ -48,6 +48,35 @@ npx wrangler deploy
 
 For automating month end with an AI agent, see **[AGENT.md](AGENT.md)**.
 
+## Owner notifications (push)
+
+Once the Worker is deployed, it checks every 2 minutes (cron in
+`wrangler.toml`) and sends push notifications to the owner's phones and
+computers:
+
+- **New leave / advance requests**, as soon as they arrive.
+- **Who is in the store** at a set time (default 11:20): in, not in yet,
+  came and went out, off (weekly off / leave).
+- **Day-end summary** once everyone who came has punched out (not before
+  20:00 by default): full day, short day, absent. At the latest time
+  (default 23:30) it is sent anyway, listing anyone with no punch-out.
+
+Nothing extra to set up: the Worker makes its own push (VAPID) key on the
+first run and keeps it in Firestore at `push_config/vapid`, the private part
+encrypted with a key derived from `API_KEY`. (Changing `API_KEY` makes a new
+push key; each owner device re-registers by itself the next time the owner
+panel is opened.)
+
+In the app: **Settings → Notifications → Turn on for this device**, then
+**Send test** (arrives within 2 minutes). Times and which alerts to send are
+set there too. Android: Chrome. iPhone: Add to Home Screen first, then turn
+it on from the home-screen app. Only owner devices get alerts.
+
+Data: devices in `businesses/{biz}/push_subs`, what was already sent in
+`businesses/{biz}/push_state/main`, settings in `settings/main.notif`. The
+cron only looks at businesses with `pushEnabled: true` (set by the app when
+a device is turned on). `POST /notify/run` runs one check now (API key).
+
 ## Salary day: reconcile a month
 
 ```bash

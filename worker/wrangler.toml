@@ -2,6 +2,10 @@ name = "attendpro-api"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
 
+# Owner push notifications (requests, morning "who's in", day end) — see src/notify.js
+[triggers]
+crons = ["*/2 * * * *"]
+
 [vars]
 FIREBASE_PROJECT_ID = "attendpro-543ad"
 # Business time zone (India). Used for "today", late checks and edited punch times.

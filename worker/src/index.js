@@ -9,8 +9,13 @@ import {
 } from './attendance.js';
 import { slipHtml, slipsDocument } from './slip.js';
 import { computePayroll, defaultSalaryCfg } from './payroll.js';
+import { runNotifications } from './notify.js';
 
 export default {
+  // Cron (wrangler.toml [triggers]): owner push notifications
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(runNotifications(env, new Date(event.scheduledTime)).catch((e) => console.error('notify', e)));
+  },
   async fetch(request, env) {
     try {
       return await handle(request, env);
@@ -54,6 +59,7 @@ const routes = [
   ['GET', `^/biz/${ID}/payroll/(\\d{4}-\\d{2})/${ID}/slip$`, slipOne],
   ['POST', `^/biz/${ID}/monthend/(\\d{4}-\\d{2})$`, monthEnd],
   ['POST', `^/biz/${ID}/advance$`, giveAdvance],
+  ['POST', '^/notify/run$', notifyRun],
 ].map(([m, re, fn]) => [m, new RegExp(re), fn]);
 
 async function handle(request, env) {
@@ -553,4 +559,9 @@ async function giveAdvance(ctx, bizId) {
       if (!retryable || attempt === 2) throw e;
     }
   }
+}
+
+// Run the notification check now (the cron does this every 2 minutes)
+async function notifyRun(ctx) {
+  return json({ ok: true, report: await runNotifications(ctx.env, new Date(), { db: ctx.db }) });
 }
