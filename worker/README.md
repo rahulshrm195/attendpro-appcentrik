@@ -22,7 +22,14 @@ differently, look for the closest match.
    your agent will use.
 3. **Cloudflare** — sign in at dash.cloudflare.com → **Workers & Pages** →
    **Create** → **Import a repository** → connect GitHub and pick
-   `attendpro-appcentrik`. Set **Root directory** to `worker` and deploy.
+   `attendpro-appcentrik`. On the "Set up your application" screen:
+   - **Project name**: `attendpro-api` (must match `name` in `wrangler.toml`)
+   - Leave **Build command** empty; keep **Deploy command** `npx wrangler deploy`
+   - Open **Advanced settings** at the bottom and set **Path** (the root
+     directory) to `worker`
+   - **Enable Preview builds** can be switched off (not needed)
+
+   Then click **Deploy**.
 4. **Secrets** — open the new Worker → **Settings → Variables and Secrets** →
    add two **Secrets**:
    - `API_KEY` = the password from step 2
