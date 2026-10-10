@@ -51,6 +51,13 @@ differently, look for the closest match.
 To change the key later, edit the `API_KEY` secret and redeploy. Every future
 push to `main` redeploys the Worker automatically.
 
+If a change on `main` doesn't show up under **Deployments** (only lines marked
+**Build / main** come from GitHub), open **Settings → Builds**. A banner "This
+project is disconnected from your Git account" means GitHub stopped telling
+Cloudflare: on GitHub, **Settings → Applications → Cloudflare Workers and
+Pages → Configure**, make sure `attendpro-appcentrik` is in **Repository
+access**, save, then reload the Cloudflare page. The next push builds again.
+
 <details><summary>Same setup from a terminal</summary>
 
 ```bash
