@@ -50,7 +50,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.26.1';
+const APP_VERSION = 'v1.27.0';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -382,7 +382,9 @@ async function boot(){
       document.getElementById('owner-login-wrap').style.display='none';
       document.getElementById('owner-panel-wrap').style.display='block';
       document.getElementById('owner-biz-title').textContent=biz.name;
-      loadOwnerSettings();renderOwnerToday();populateDropdowns();renderQRCode();
+      loadOwnerSettings();renderOwnerToday();populateDropdowns();renderQRCode();ownerPushRefresh();
+      const openQ=new URLSearchParams(location.search).get('open');
+      if(openQ){history.replaceState(null,'',location.pathname);setTimeout(()=>openFromNotification(openQ),700);}
       const themeBtn=document.getElementById('theme-btn');
       if(themeBtn) themeBtn.textContent=document.body.classList.contains('light-theme')?'🌙':'☀️';
       if(_inboxListener) _inboxListener();
@@ -935,7 +937,7 @@ window.ownerLogin=function(){
     document.getElementById('owner-login-wrap').style.display='none';
     document.getElementById('owner-panel-wrap').style.display='block';
     document.getElementById('owner-biz-title').textContent=biz.name;
-    loadOwnerSettings();renderOwnerToday();populateDropdowns();renderQRCode();
+    loadOwnerSettings();renderOwnerToday();populateDropdowns();renderQRCode();ownerPushRefresh();
     requestNotifPermission();
     localStorage.setItem('ap_owner_session','1');
     // Sync theme button icon
@@ -4641,6 +4643,92 @@ function sendNotif(title, body, tag='ap-notif'){
 }
 
 // ─────────────────────────────────────────────
+//  OWNER PUSH NOTIFICATIONS
+//  The AttendPro server (worker/, cron every 2 min) sends them. This device
+//  registers in push_subs with the server's public key from push_config/vapid.
+// ─────────────────────────────────────────────
+const NOTIF_DEFAULTS={requests:true,morning:true,morningAt:'11:20',dayEnd:true,dayEndFrom:'20:00',dayEndLatest:'23:30'};
+function pushSupported(){return 'serviceWorker' in navigator&&'PushManager' in window&&'Notification' in window;}
+function isIOS(){return /iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);}
+function isStandalone(){return window.matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;}
+function b64uToBytes(s){s=s.replace(/-/g,'+').replace(/_/g,'/');const b=atob(s+'='.repeat((4-s.length%4)%4));return Uint8Array.from(b,c=>c.charCodeAt(0));}
+function bytesToB64u(buf){return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+async function pushSubId(endpoint){const h=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(endpoint));return bytesToB64u(h).slice(0,32);}
+function deviceLabel(){const u=navigator.userAgent;const os=/Android/.test(u)?'Android':isIOS()?'iPhone/iPad':/Mac/.test(u)?'Mac':/Windows/.test(u)?'Windows':'Device';const br=/Edg\//.test(u)?'Edge':/Chrome\//.test(u)?'Chrome':/Firefox\//.test(u)?'Firefox':/Safari\//.test(u)?'Safari':'';return os+(br?' · '+br:'');}
+async function currentPushSub(){if(!pushSupported())return null;const reg=await navigator.serviceWorker.getRegistration();return reg?reg.pushManager.getSubscription():null;}
+async function savePushSub(sub,vapidKey){
+  const j=sub.toJSON();
+  await fbSet(`businesses/${BIZ_ID}/push_subs/${await pushSubId(j.endpoint)}`,{endpoint:j.endpoint,p256dh:j.keys.p256dh,auth:j.keys.auth,vapidKey,device:deviceLabel(),savedAt:Date.now()});
+  if(!biz.pushEnabled){await fbSet(p.biz(),{pushEnabled:true});biz.pushEnabled=true;ls.set('ap_biz_cache',biz);}
+}
+window.renderOwnerPush=async function(){
+  const st=document.getElementById('np-status');if(!st)return;
+  const n=Object.assign({},NOTIF_DEFAULTS,settings.notif||{});
+  document.getElementById('np-req').checked=n.requests;document.getElementById('np-morning').checked=n.morning;document.getElementById('np-dayend').checked=n.dayEnd;
+  document.getElementById('np-morning-at').value=n.morningAt;document.getElementById('np-dayend-from').value=n.dayEndFrom;document.getElementById('np-dayend-latest').value=n.dayEndLatest;
+  const on=document.getElementById('np-on'),off=document.getElementById('np-off'),te=document.getElementById('np-test');
+  const show=(a,b,c)=>{on.style.display=a?'':'none';off.style.display=b?'':'none';te.style.display=c?'':'none';};
+  fbList(`businesses/${BIZ_ID}/push_subs`).then(L=>{const d=document.getElementById('np-devices');if(d)d.textContent=L.length?'Turned on for '+L.length+' device'+(L.length>1?'s':'')+': '+L.map(x=>x.device||'device').join(', '):'Not turned on for any device yet.';}).catch(()=>{});
+  if(isIOS()&&!isStandalone()){st.innerHTML='On iPhone: tap <b>Share → Add to Home Screen</b>, open AttendPro from the home screen, then turn notifications on there.';show(false,false,false);return;}
+  if(!pushSupported()){st.textContent='This browser can\'t get notifications. On Android use Chrome; on computer use Chrome, Edge or Safari.';show(false,false,false);return;}
+  if(Notification.permission==='denied'){st.textContent='Notifications are blocked for this site. Allow them in the browser\'s site settings (🔒 next to the address), then come back.';show(false,false,false);return;}
+  const sub=await currentPushSub().catch(()=>null);
+  if(sub&&Notification.permission==='granted'){st.innerHTML='<span style="color:var(--green);font-weight:700">✓ On for this device</span>';show(false,true,true);}
+  else{st.textContent='Off on this device.';show(true,false,false);}
+};
+window.enableOwnerPush=async function(){
+  if(!pushSupported())return toast('This browser can\'t get notifications',true);
+  setLoading(true,'Turning on…');
+  try{
+    const cfg=await fbGet('push_config/vapid');
+    if(!cfg||!cfg.publicKey){setLoading(false);return alert('The AttendPro notification server isn\'t switched on yet. Once it is set up (one time), this button will work.');}
+    const perm=await Notification.requestPermission();
+    if(perm!=='granted'){setLoading(false);renderOwnerPush();return toast('Notifications were not allowed',true);}
+    const reg=await navigator.serviceWorker.ready;
+    let sub=await reg.pushManager.getSubscription();
+    if(sub&&sub.options&&sub.options.applicationServerKey&&bytesToB64u(sub.options.applicationServerKey)!==cfg.publicKey){await sub.unsubscribe();sub=null;}
+    if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64uToBytes(cfg.publicKey)});
+    await savePushSub(sub,cfg.publicKey);
+    toast('✓ Notifications on for this device');
+  }catch(e){toast('Could not turn on: '+e.message,true);}
+  setLoading(false);renderOwnerPush();
+};
+window.disableOwnerPush=async function(){
+  try{const sub=await currentPushSub();if(sub){await deleteDoc(doc(db,`businesses/${BIZ_ID}/push_subs/${await pushSubId(sub.endpoint)}`)).catch(()=>{});await sub.unsubscribe();}toast('Notifications off for this device');}
+  catch(e){toast('Error: '+e.message,true);}
+  renderOwnerPush();
+};
+window.testOwnerPush=async function(){
+  try{await fbSet(p.settings(),{notifTestAt:Date.now()});toast('✓ Test sent — it arrives within 2 minutes');}catch(e){toast('Error: '+e.message,true);}
+};
+window.saveOwnerPushPrefs=async function(){
+  const t=id=>document.getElementById(id).value;
+  const n={requests:document.getElementById('np-req').checked,morning:document.getElementById('np-morning').checked,morningAt:t('np-morning-at')||NOTIF_DEFAULTS.morningAt,
+    dayEnd:document.getElementById('np-dayend').checked,dayEndFrom:t('np-dayend-from')||NOTIF_DEFAULTS.dayEndFrom,dayEndLatest:t('np-dayend-latest')||NOTIF_DEFAULTS.dayEndLatest};
+  if(n.dayEndLatest<=n.dayEndFrom)return toast('"Latest" must be after "Not before"',true);
+  try{await fbSet(p.settings(),{notif:n});settings.notif=n;ls.set('ap_settings_cache',settings);toast('✓ Notification settings saved');}catch(e){toast('Error: '+e.message,true);}
+};
+// Owner panel opened: keep this device's registration current (new server key, deleted entry)
+async function ownerPushRefresh(){
+  try{
+    if(!pushSupported()||Notification.permission!=='granted')return;
+    const sub=await currentPushSub();if(!sub)return;
+    const cfg=await fbGet('push_config/vapid');if(!cfg||!cfg.publicKey)return;
+    const key=sub.options&&sub.options.applicationServerKey?bytesToB64u(sub.options.applicationServerKey):null;
+    if(key&&key!==cfg.publicKey){await sub.unsubscribe();const reg=await navigator.serviceWorker.ready;const s2=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64uToBytes(cfg.publicKey)});await savePushSub(s2,cfg.publicKey);return;}
+    const have=await fbGet(`businesses/${BIZ_ID}/push_subs/${await pushSubId(sub.endpoint)}`);
+    if(!have)await savePushSub(sub,cfg.publicKey);
+  }catch(e){}
+}
+// Tapping a notification: ?open=requests|today (fresh start) or a message from the service worker (app already open)
+function openFromNotification(what){
+  if(localStorage.getItem('ap_owner_session')!=='1'||!what)return;
+  if(typeof DK!=='undefined'&&DK.on)deskGo(what==='requests'?'requests':'today');
+  else showOwnerTab(what==='requests'?'inbox':'today');
+}
+if('serviceWorker' in navigator)navigator.serviceWorker.addEventListener('message',e=>{if(e.data&&e.data.type==='open')openFromNotification(e.data.open);});
+
+// ─────────────────────────────────────────────
 //  KICK OFF
 // ─────────────────────────────────────────────
 boot();
@@ -5728,7 +5816,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.26.1</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.27.0</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6183,6 +6271,34 @@ body.dk-body .sheet{border-radius:20px}
         </div>
         <p style="font-size:11px;color:var(--muted);margin-top:8px;" id="store-loc-status"></p>
       </div><!-- /card store location -->
+        </div>
+      </details>
+      <details class="set-group" id="set-notif-group" ontoggle="if(this.open)renderOwnerPush()">
+        <summary><span class="sg-icon">🔔</span><span class="sg-text"><span class="sg-title">Notifications</span><span class="sg-sub">Alerts on your phone: requests, 11:20 who's in, day end</span></span></summary>
+        <div class="sg-body">
+      <div class="card">
+        <div class="card-title">🔔 This phone / computer</div>
+        <div id="np-status" style="font-size:13px;color:var(--muted);margin-bottom:10px;">Checking…</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-primary btn-sm" id="np-on" style="width:auto" onclick="enableOwnerPush()">Turn on for this device</button>
+          <button class="btn btn-ghost btn-sm" id="np-off" style="width:auto;display:none" onclick="disableOwnerPush()">Turn off here</button>
+          <button class="btn btn-secondary btn-sm" id="np-test" style="width:auto;display:none" onclick="testOwnerPush()">Send test</button>
+        </div>
+        <div id="np-devices" style="font-size:12px;color:var(--muted);margin-top:10px;"></div>
+      </div>
+      <div class="card">
+        <div class="card-title">What to send</div>
+        <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:12px;font-size:14px;"><input type="checkbox" id="np-req" style="margin-top:3px"><span><b>New leave &amp; advance requests</b><br><span style="font-size:12px;color:var(--muted)">As soon as a staff member sends one</span></span></label>
+        <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:6px;font-size:14px;"><input type="checkbox" id="np-morning" style="margin-top:3px"><span><b>Who is in the store</b><br><span style="font-size:12px;color:var(--muted)">Who is in, who hasn't come, who is off</span></span></label>
+        <div class="form-group" style="margin-left:26px;"><label class="form-label">At</label><input type="time" class="form-input" id="np-morning-at" style="max-width:160px"></div>
+        <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:6px;font-size:14px;"><input type="checkbox" id="np-dayend" style="margin-top:3px"><span><b>Day-end summary</b><br><span style="font-size:12px;color:var(--muted)">Sent when everyone has punched out: full day, short day, absent. If someone never punches out, it's sent at the latest time with their name.</span></span></label>
+        <div style="display:flex;gap:10px;margin-left:26px;flex-wrap:wrap;">
+          <div class="form-group"><label class="form-label">Not before</label><input type="time" class="form-input" id="np-dayend-from" style="max-width:160px"></div>
+          <div class="form-group"><label class="form-label">Latest</label><input type="time" class="form-input" id="np-dayend-latest" style="max-width:160px"></div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="saveOwnerPushPrefs()">Save</button>
+        <p style="font-size:12px;color:var(--muted);margin-top:10px;">Alerts go to every phone or computer where you turned them on. Staff don't get these.</p>
+      </div>
         </div>
       </details>
       <details class="set-group">
@@ -6748,7 +6864,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.26.1</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.27.0</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6756,11 +6872,22 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.27.0 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.27.0</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Owner notifications that arrive even when the app is closed: new leave &amp; advance requests, who is in the store at 11:20, and a day-end summary when everyone has punched out (full day, short day, absent, missed punch-out)</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Settings → Notifications: turn on for each phone or computer, choose times, send a test. Needs the AttendPro server switched on (one-time setup)</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.26.1 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.26.1</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.26.1</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Staff bank details: account holder name, account number (entered twice to avoid mistakes) and IFSC — 🏦 Bank button on each staff member</span></div>

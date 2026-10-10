@@ -6,7 +6,7 @@
 //  • Background sync ready (future)
 // ═══════════════════════════════════════════════
 
-const CACHE_NAME    = 'attendpro-v1.26.1';
+const CACHE_NAME    = 'attendpro-v1.27.0';
 const OFFLINE_URL   = './index.html';
 
 // Files to cache on install
@@ -92,18 +92,20 @@ self.addEventListener('push', event => {
 });
 
 // ── NOTIFICATION CLICK: open/focus app ──
+// data.url may carry ?open=requests|today — an open app is told by message,
+// a closed one is opened at that address.
 self.addEventListener('notificationclick', event => {
   event.notification.close();
   const target = event.notification.data?.url || './';
+  const open = new URL(target, self.registration.scope).searchParams.get('open');
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
-      // Focus existing tab if open
       for (const client of list) {
-        if (client.url.includes('index.html') || client.url.endsWith('/')) {
+        if (client.url.startsWith(self.registration.scope)) {
+          if (open) client.postMessage({ type: 'open', open });
           return client.focus();
         }
       }
-      // Otherwise open new tab
       return clients.openWindow(target);
     })
   );
