@@ -4,6 +4,10 @@ compatibility_date = "2026-09-01"
 # Public address https://attendpro-api.<account>.workers.dev (for /health and the agent API)
 workers_dev = true
 
+# Workers Logs (dashboard → Observability): cron runs and errors are kept there
+[observability]
+enabled = true
+
 # Owner push notifications (requests, morning "who's in", day end) — see src/notify.js
 [triggers]
 crons = ["*/5 * * * *"]
