@@ -16,7 +16,6 @@
 <link rel="preconnect" href="https://firestore.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
 
 <!-- ═══════════════════════════════════════════════════════
      FIREBASE CONFIG — PASTE YOUR CONFIG HERE
@@ -50,7 +49,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.28.0';
+const APP_VERSION = 'v1.28.1';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -442,8 +441,8 @@ function bootRefreshed(){
 function hideSplash(){
   setTimeout(()=>{
     const sp=document.getElementById('splash');
-    if(sp){sp.style.opacity='0';setTimeout(()=>sp.remove(),500);}
-  },1200);
+    if(sp){sp.style.opacity='0';setTimeout(()=>sp.remove(),300);}
+  },250);
 }
 
 // ─────────────────────────────────────────────
@@ -609,9 +608,20 @@ function resetPunchSteps(){
   document.getElementById('retake-btn').style.display='none';
   document.getElementById('confirm-btn').style.display='none';
 }
-function startQR(){
+// The QR scanner library (~370 KB) is only downloaded when someone scans
+let qrLibP=null;
+function loadQrLib(){
+  if(window.Html5Qrcode)return Promise.resolve();
+  if(!qrLibP)qrLibP=new Promise((res,rej)=>{const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js';
+    s.onload=res;s.onerror=()=>{qrLibP=null;rej(new Error('QR scanner did not load'));};document.head.appendChild(s);});
+  return qrLibP;
+}
+async function startQR(){
   if(qrScanner){try{qrScanner.stop();}catch(e){}qrScanner=null;}
   document.getElementById('qr-scanner-div').innerHTML='';
+  try{await loadQrLib();}catch(e){return toast('Camera unavailable — tap Skip',true);}
+  if(qrScanner){try{qrScanner.stop();}catch(e){}qrScanner=null;}
   qrScanner=new Html5Qrcode('qr-scanner-div');
   qrScanner.start({facingMode:'environment'},{fps:10,qrbox:{width:180,height:180}},
     d=>{if(d===STORE_QR){stopQR();showSelfieStep();}else toast('❌ Wrong QR',true);},
@@ -894,7 +904,7 @@ async function renderMyHistory(){
   setLoading(true,'Loading history…');
   try{
     const prefix=`${d.getFullYear()}-${pad(d.getMonth()+1)}`;
-    const all=await fbList(p.recs(),where('staffId','==',currentStaff.id));
+    const all=await fbList(p.recs(),where('staffId','==',currentStaff.id),where('date','>=',prefix+'-01'),where('date','<=',prefix+'-31'));
     const recs={}; all.filter(r=>r.date?.startsWith(prefix)).forEach(r=>recs[r.id]=r);
     const marksAll=await fbList(p.days());
     const marks={}; marksAll.filter(m=>m.date?.startsWith(prefix)&&(!m.staffId||m.staffId===currentStaff.id)).forEach(m=>marks[m.date+(m.staffId?'_'+m.staffId:'')]=m);
@@ -1849,7 +1859,8 @@ window.exportAttendanceCSV=async function(){
   const monthLabel=d.toLocaleDateString('en-IN',{month:'long',year:'numeric'});
   setLoading(true,'Preparing export…');
   try{
-    const allRecs=await fbList(p.recs());
+    const mp=year+'-'+pad(month+1);
+    const allRecs=await fbList(p.recs(),where('date','>=',mp+'-01'),where('date','<=',mp+'-31'));
     const filtered=allRecs.filter(r=>{
       const rd=new Date(r.date);
       return rd.getFullYear()===year&&rd.getMonth()===month&&(staffSel==='all'||r.staffId===staffSel);
@@ -1888,7 +1899,8 @@ window.exportAttendancePDF=async function(){
   const monthLabel=d.toLocaleDateString('en-IN',{month:'long',year:'numeric'});
   setLoading(true,'Preparing PDF…');
   try{
-    const allRecs=await fbList(p.recs());
+    const mp=year+'-'+pad(month+1);
+    const allRecs=await fbList(p.recs(),where('date','>=',mp+'-01'),where('date','<=',mp+'-31'));
     const filtered=allRecs.filter(r=>{
       const rd=new Date(r.date);
       return rd.getFullYear()===year&&rd.getMonth()===month&&(staffSel==='all'||r.staffId===staffSel);
@@ -4848,10 +4860,14 @@ async function dkLoadCommon(){
   const today=todayStr();
   const [recs,reqs]=await Promise.all([fbList(p.recs(),where('date','==',today)).catch(()=>[]),fbList(p.requests(),orderBy('ts','desc')).catch(()=>[])]);
   DK.data.today=recs;DK.data.reqs=reqs;DK.data.pending=reqs.filter(r=>r.status==='pending');
-  const pm=prevMonthKey();
+  // Last month's records carry every selfie photo, so they are heavy: count the
+  // punch problems in the background instead of making every page wait for it.
   if(!DK.data.fixAt||Date.now()-DK.data.fixAt>60000){
-    const mrecs=await dkMonthRecs(pm);
-    DK.data.fixCount=mrecs.filter(r=>detectPunchProblems(r,today).length).length;DK.data.fixAt=Date.now();
+    DK.data.fixAt=Date.now();
+    dkMonthRecs(prevMonthKey()).then(mrecs=>{
+      const n=mrecs.filter(r=>detectPunchProblems(r,today).length).length;
+      if(n!==DK.data.fixCount){DK.data.fixCount=n;if(DK.on){dkNav();if(DK.v==='today')deskPing();}}
+    }).catch(()=>{});
   }
 }
 
@@ -5254,7 +5270,7 @@ deskSync();
 <div id="toast" style="position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#13131a;border:1px solid;border-radius:30px;padding:11px 22px;font-size:13px;font-weight:600;z-index:9999;white-space:nowrap;display:none;box-shadow:0 8px 32px rgba(0,0,0,.6);font-family:'DM Sans',sans-serif;"></div>
 
 <!-- ══ SPLASH ══ -->
-<div id="splash" style="position:fixed;inset:0;z-index:999;background:#0a0a0f;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;transition:opacity .5s;">
+<div id="splash" style="position:fixed;inset:0;z-index:999;background:#0a0a0f;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;transition:opacity .3s;">
   <div style="width:88px;height:88px;background:linear-gradient(135deg,#f5a623,#e8522a);border-radius:26px;display:flex;align-items:center;justify-content:center;font-family:'Syne',sans-serif;font-size:32px;font-weight:800;color:#fff;box-shadow:0 0 56px rgba(245,166,35,.45);animation:popIn .7s cubic-bezier(.175,.885,.32,1.275) both;">AP</div>
   <div style="font-family:'Syne',sans-serif;font-size:24px;font-weight:800;color:#f0f0f5;">AttendPro</div>
   <div style="color:#7070a0;font-size:13px;font-family:'DM Sans',sans-serif;">Staff Management Platform</div>
@@ -5825,7 +5841,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.28.0</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.28.1</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6874,7 +6890,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.28.0</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.28.1</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6882,11 +6898,23 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.28.1 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.28.1</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Faster opening: the start-up screen goes away sooner and the QR scanner is only downloaded when someone scans</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Computer layout opens faster: last month's punch check runs in the background instead of holding up every page</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Excel / PDF export and staff "My history" now download only the chosen month, not every record ever saved</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.28.0 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.28.0</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.28.0</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>New option in Settings → Notifications: an alert for every punch in and out, for each staff member and session, within seconds of the punch (off by default)</span></div>
