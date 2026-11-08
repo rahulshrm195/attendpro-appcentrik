@@ -49,7 +49,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.29.1';
+const APP_VERSION = 'v1.29.2';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -5997,6 +5997,12 @@ body.dk-body .sheet{border-radius:20px}
 #desk .dk-stats.dk-g2 .dk-stat{padding:11px 14px;gap:5px}
 #desk .dk-stats.dk-g2 .dk-stat .v{font-size:21px}
 #desk #dk-det>.dk-ch{flex-wrap:nowrap;align-items:flex-start}
+/* Selected person stays visible: the panel's name header is pinned while the panel scrolls */
+#desk #dk-det>.dk-ch{position:sticky;top:0;z-index:3;background:var(--s1);border-radius:12px 12px 0 0;box-shadow:0 8px 12px -10px rgba(0,0,0,.35)}
+/* ...and the selected row in the table is clearly marked */
+#desk #dk-sheet .dk-t tbody tr.sel td{background:color-mix(in srgb,var(--accent) 16%,transparent)}
+#desk #dk-sheet .dk-t tbody tr.sel td:first-child{box-shadow:inset 4px 0 0 var(--accent)}
+#desk #dk-sheet .dk-t tbody tr.sel .dk-who b{color:var(--accent2)}
 #desk #dk-det>.dk-ch>div{min-width:0}
 /* desk analytics */
 #desk .f-ok{background:var(--green);fill:var(--green)} #desk .f-late{background:var(--accent);fill:var(--accent)} #desk .f-abs{background:var(--red);fill:var(--red)}
@@ -6032,7 +6038,7 @@ body.dk-body .sheet{border-radius:20px}
 #dk-tip{position:fixed;z-index:700;display:none;pointer-events:none;background:var(--text);color:var(--bg);font:600 12px/1.4 var(--fb);padding:6px 9px;border-radius:7px;max-width:280px;box-shadow:0 6px 18px rgba(0,0,0,.25)}
 #dk-back[hidden]{display:none}
 @media (max-width:1380px){#desk{grid-template-columns:216px minmax(0,1fr) 0}#desk .dk-ctx{display:none}#desk.dk-ctxwide{grid-template-columns:216px minmax(0,1fr) 300px}#desk.dk-ctxwide .dk-ctx{display:block}.dk-kbtn span{display:none}.dk-kbtn{min-width:0}}
-@media (max-width:1250px){.dk-payg{grid-template-columns:minmax(0,1fr)}.dk-det{position:static;max-height:none}.dk-clock{display:none}}
+@media (max-width:1250px){#desk #dk-det>.dk-ch{position:static;box-shadow:none}.dk-payg{grid-template-columns:minmax(0,1fr)}.dk-det{position:static;max-height:none}.dk-clock{display:none}}
 
 </style>
 <!-- ══════════════════════════════════
@@ -6043,7 +6049,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.29.1</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.29.2</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -7097,7 +7103,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.29.1</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.29.2</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -7105,11 +7111,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.29.2 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.29.2</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll (computer layout): the selected staff member's name stays at the top of the right panel while you scroll, and their row in the list is clearly highlighted</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.29.1 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.29.1</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.29.1</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Email slip: the PDF now has the salary slip and the day-by-day statement together</span></div>
