@@ -49,7 +49,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.29.0';
+const APP_VERSION = 'v1.29.1';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -4288,7 +4288,7 @@ async function slipData(sid,mv){
     paidText:payRec?'Paid on '+payRec.date+' by '+({cash:'Cash',upi:'UPI',bank:'Bank transfer'}[payRec.mode]||payRec.mode)+(payRec.mode==='bank'&&bank&&bank.acc?' to A/c '+bankMask(bank.acc)+' ('+bank.ifsc+')':'')+(payRec.note?' ('+payRec.note+')':''):''};
 }
 function slipEmailText(d,withPdf){
-  const L=['Dear '+d.staff.name+',','','Your salary slip for '+d.ml+' from '+(biz.name||'')+(withPdf?' is attached (PDF).':'.'),''];
+  const L=['Dear '+d.staff.name+',','','Your salary slip for '+d.ml+' from '+(biz.name||'')+(withPdf?(d.withStatement?' is attached (PDF), together with a day-by-day statement of the month.':' is attached (PDF).'):'.'),''];
   if(d.duty)L.push(d.duty,'');
   d.rows.forEach(r=>L.push(r[0]+': '+r[1]));
   L.push('------------------------------','GROSS SALARY: '+d.gross,'Advance recovered: '+d.adv);
@@ -4304,7 +4304,7 @@ function loadJsPdf(){
   if(!jsPdfP)jsPdfP=new Promise((res,rej)=>{const sc=document.createElement('script');sc.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';sc.onload=()=>res(window.jspdf);sc.onerror=()=>{jsPdfP=null;rej(new Error('Could not load the PDF maker — check internet'));};document.head.appendChild(sc);});
   return jsPdfP;
 }
-async function slipPdf(d){
+async function slipPdf(d,stmtHtml){
   const {jsPDF}=await loadJsPdf();
   const pdf=new jsPDF({unit:'mm',format:'a4'}),X=20,R=190,W=R-X;let y=24;
   const T=(t,x,yy,o)=>pdf.text(pdfTxt(t),x,yy,o||{});
@@ -4339,8 +4339,58 @@ async function slipPdf(d){
   d.notes.forEach(n=>{T(n,X,y);y+=5;});
   if(d.paidText){y+=2;pdf.setTextColor(...GREEN);pdf.setFont('helvetica','bold');T(d.paidText,X,y);y+=5;}
   pdf.setFont('helvetica','normal');pdf.setFontSize(8);pdf.setTextColor(170);T('AttendPro · '+new Date().toLocaleDateString('en-IN'),105,285,{align:'center'});
-  const fname=('Salary-slip_'+d.staff.name+'_'+d.mv).replace(/[^A-Za-z0-9_-]+/g,'-')+'.pdf';
+  if(stmtHtml){try{stmtPdfPages(pdf,stmtHtml);d.withStatement=true;}catch(e){console.warn('statement pages',e);}}
+  const fname=((d.withStatement?'Salary-slip-and-statement_':'Salary-slip_')+d.staff.name+'_'+d.mv).replace(/[^A-Za-z0-9_-]+/g,'-')+'.pdf';
   return new File([pdf.output('blob')],fname,{type:'application/pdf'});
+}
+// Day-by-day statement pages for the slip PDF. Copied from the statement page itself
+// (payStatementHtml), so the PDF always shows exactly the same days and amounts.
+function stmtPdfPages(pdf,html){
+  const dd=new DOMParser().parseFromString(html,'text/html');
+  const X=12,R=198,W=R-X,LH=3.5;let y=0;
+  const clean=t=>pdfTxt(String(t||'').replace(/→/g,'->').replace(/\s+\n/g,'\n').replace(/[ \t]+/g,' ').trim());
+  const cellText=el=>{const c=el.cloneNode(true);c.querySelectorAll('br').forEach(b=>b.replaceWith('\n'));return c.textContent;};
+  const page=()=>{pdf.addPage();y=16;};
+  page();
+  pdf.setFont('helvetica','bold');pdf.setFontSize(14);pdf.setTextColor(17);pdf.text(clean(dd.querySelector('h1')&&dd.querySelector('h1').textContent),X,y);
+  const net=dd.querySelector('.net b');if(net){pdf.setFontSize(9);pdf.setTextColor(110);pdf.text('Net pay',R,y-5,{align:'right'});pdf.setFontSize(14);pdf.setTextColor(17);pdf.text(clean(net.textContent),R,y+1,{align:'right'});}
+  y+=6;pdf.setFont('helvetica','normal');pdf.setFontSize(9);pdf.setTextColor(90);
+  const sub=pdf.splitTextToSize(clean(dd.querySelector('.sub')&&dd.querySelector('.sub').textContent),W-40);pdf.text(sub,X,y);y+=sub.length*4+2;
+  pdf.setDrawColor(245,166,35);pdf.setLineWidth(0.6);pdf.line(X,y,R,y);y+=6;
+  const warn=dd.querySelector('.warn');
+  if(warn){const wl=pdf.splitTextToSize(clean(warn.textContent),W-6);pdf.setFillColor(255,243,205);pdf.rect(X,y-4,W,wl.length*LH+4,'F');pdf.setFontSize(8);pdf.setTextColor(122,82,0);pdf.text(wl,X+3,y);y+=wl.length*LH+5;}
+  const heading=t=>{if(y>262)page();pdf.setFont('helvetica','bold');pdf.setFontSize(10.5);pdf.setTextColor(17);pdf.text(clean(t),X,y);y+=5;};
+  const rules=dd.querySelector('.rules');
+  if(rules){heading('How this salary is worked out');pdf.setFont('helvetica','normal');pdf.setFontSize(8);pdf.setTextColor(60);
+    cellText(rules).split('\n').forEach(line=>{const l=pdf.splitTextToSize(clean(line),W);if(!l.length||!l[0])return;if(y+l.length*LH>284)page();pdf.text(l,X,y);y+=l.length*LH+0.6;});y+=4;}
+  dd.querySelectorAll('table').forEach(tbl=>{
+    let h2=tbl.previousElementSibling;while(h2&&h2.tagName!=='H2')h2=h2.previousElementSibling;
+    heading(h2?h2.textContent:'');
+    const ths=[...tbl.querySelectorAll('thead th')],n=ths.length||1;
+    const ws=n===7?[20,30,34,17,17,42,26]:n===3?[100,54,32]:Array(n).fill(W/n);
+    const xs=ws.reduce((a,w,i)=>(a.push(i?a[i-1]+ws[i-1]:X),a),[]);
+    const right=i=>ths[i]&&ths[i].classList.contains('r');
+    const head=()=>{pdf.setFont('helvetica','bold');pdf.setFontSize(6.8);pdf.setTextColor(120);
+      ths.forEach((th,i)=>pdf.text(clean(th.textContent).toUpperCase(),right(i)?xs[i]+ws[i]-1:xs[i]+1,y,right(i)?{align:'right'}:{}));
+      y+=1.8;pdf.setDrawColor(210);pdf.setLineWidth(0.2);pdf.line(X,y,R,y);y+=3.4;};
+    head();
+    tbl.querySelectorAll('tbody tr').forEach(tr=>{
+      const tds=[...tr.children],cls=tr.className||'';
+      if(cls.indexOf('note')>=0){
+        const l=pdf.splitTextToSize(clean(cellText(tds[tds.length-1])),W-ws[0]-2);if(y+l.length*LH>284){page();head();}
+        pdf.setFont('helvetica','italic');pdf.setFontSize(7.2);pdf.setTextColor(122,82,0);pdf.text(l,xs[1]+1,y-0.6);y+=l.length*LH+0.8;return;}
+      const bold=/tot|grand/.test(cls);pdf.setFont('helvetica',bold?'bold':'normal');pdf.setFontSize(/grand/.test(cls)?8.6:7.6);
+      const lines=tds.map((td,i)=>pdf.splitTextToSize(clean(cellText(td)),(ws[i]||20)-2));
+      const hgt=Math.max(1,...lines.map(l=>l.length))*LH+1.6;
+      if(y+hgt>286){page();head();pdf.setFont('helvetica',bold?'bold':'normal');pdf.setFontSize(/grand/.test(cls)?8.6:7.6);}
+      const fill=/grand/.test(cls)?[255,248,236]:/mis/.test(cls)?[255,243,205]:/abs/.test(cls)?[255,244,244]:/off/.test(cls)?[245,248,255]:null;
+      if(fill){pdf.setFillColor(...fill);pdf.rect(X,y-3.2,W,hgt,'F');}
+      if(/tot/.test(cls)){pdf.setDrawColor(60);pdf.setLineWidth(0.4);pdf.line(X,y-3.2,R,y-3.2);}
+      pdf.setTextColor(25);
+      tds.forEach((td,i)=>{if(!ws[i])return;const r=td.classList.contains('r');pdf.text(lines[i],r?xs[i]+ws[i]-1:xs[i]+1,y,r?{align:'right'}:{});});
+      y+=hgt-1.6;pdf.setDrawColor(235);pdf.setLineWidth(0.15);pdf.line(X,y-1.6+1.2,R,y-1.6+1.2);y+=1.6;});
+    y+=5;});
+  const total=pdf.getNumberOfPages();for(let i=2;i<=total;i++){pdf.setPage(i);pdf.setFont('helvetica','normal');pdf.setFontSize(7.5);pdf.setTextColor(170);pdf.text('Salary statement · page '+(i-1)+' of '+(total-1),105,291,{align:'center'});}
 }
 // Email slip: makes the PDF, then a small box with the ways to send it.
 // Sharing needs a fresh tap, so the PDF is made first and the share starts from the box.
@@ -4354,8 +4404,12 @@ window.emailSalarySlip=async function(){
     to=await editStaffEmail(sid);if(!to)return;
   }
   setLoading(true,'Making PDF…');
-  let d,file;
-  try{d=await slipData(sid,mv);file=await slipPdf(d);}
+  let d,file,stmtHtml=null;
+  // The day-by-day statement goes into the same PDF, after the slip (same amounts as the 📄 statement)
+  try{const adv=document.getElementById('pay-advance-recover');
+    const C=await computePayroll(sid,mv,{incentive:parseInt(v('pay-incentive-inp'))||0,advRecover:adv&&adv.dataset.userEdited?(parseInt(adv.value)||0):null});
+    if(C)stmtHtml=payStatementHtml(C,mv);}catch(e){console.warn('statement',e);}
+  try{d=await slipData(sid,mv);file=await slipPdf(d,stmtHtml);}
   catch(e){setLoading(false);toast('PDF could not be made — sending the slip as text instead',true);d=d||await slipData(sid,mv);openSlipMail(to,d,false);return;}
   setLoading(false);
   const canShare=!!(navigator.canShare&&navigator.share&&navigator.canShare({files:[file]}));
@@ -4364,12 +4418,14 @@ window.emailSalarySlip=async function(){
   box.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
   box.innerHTML=`<div style="background:var(--s1);color:var(--text);border:1px solid var(--border);border-radius:16px;max-width:420px;width:100%;padding:20px;font-size:14px;">
     <div style="font-family:var(--fh);font-weight:800;font-size:17px;margin-bottom:4px;">✉️ Salary slip ready</div>
-    <div style="color:var(--muted);font-size:13px;margin-bottom:14px;">${ksEsc(d.staff.name)} · ${ksEsc(d.ml)} · ${ksEsc(d.net)}<br>PDF: ${ksEsc(file.name)}</div>
+    <div style="color:var(--muted);font-size:13px;margin-bottom:14px;">${ksEsc(d.staff.name)} · ${ksEsc(d.ml)} · ${ksEsc(d.net)}<br>PDF: ${ksEsc(file.name)}${d.withStatement?'<br>Slip + day-by-day statement in one PDF':''}</div>
     <div style="display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:8px 10px;margin-bottom:14px;"><span style="flex:1;overflow:hidden;text-overflow:ellipsis;">To: <b>${ksEsc(to)}</b></span><button class="btn btn-ghost btn-xs" id="smb-copy">Copy</button></div>
-    ${canShare?`<button class="btn btn-primary" id="smb-share">📎 Share PDF → Mail / Gmail</button>
-    <div style="font-size:12px;color:var(--muted);margin:6px 0 12px;">The PDF is attached for you. Choose Mail or Gmail, then paste the email address in <b>To</b> (it's copied).</div>`:''}
-    <button class="btn ${canShare?'btn-ghost':'btn-primary'}" id="smb-dl">⬇️ Download PDF + open email</button>
-    <div style="font-size:12px;color:var(--muted);margin:6px 0 12px;">Saves the PDF and opens your mail app addressed to ${ksEsc(d.staff.name)} — attach the saved PDF (in Downloads) before sending.</div>
+    <button class="btn btn-primary" id="smb-gmail">✉️ Download PDF + open Gmail</button>
+    <div style="font-size:12px;color:var(--muted);margin:6px 0 12px;">Saves the PDF and opens a Gmail email in a new tab, already addressed to ${ksEsc(d.staff.name)} with the subject and text. Drag the PDF from Downloads into the email (or click 📎) and press Send.</div>
+    ${canShare?`<button class="btn btn-ghost" id="smb-share">📎 Share PDF (phone: Gmail app)</button>
+    <div style="font-size:12px;color:var(--muted);margin:6px 0 12px;">The PDF is attached for you. On a phone choose Gmail, then paste the email address in <b>To</b> (it's copied).</div>`:''}
+    <button class="btn btn-ghost" id="smb-dl">⬇️ Download PDF + open Mail app</button>
+    <div style="font-size:12px;color:var(--muted);margin:6px 0 12px;">Only if this computer's Mail app is set up.</div>
     <button class="btn btn-ghost" id="smb-close">Close</button></div>`;
   document.body.appendChild(box);
   const close=()=>box.remove();
@@ -4383,11 +4439,16 @@ window.emailSalarySlip=async function(){
     try{await navigator.share({files:[file],title:'Salary slip — '+d.ml+' — '+(biz.name||''),text:slipEmailText(d,true)});close();}
     catch(e){if(e&&e.name!=='AbortError')toast('Sharing did not work — use Download instead',true);}
   };
-  box.querySelector('#smb-dl').onclick=()=>{
-    const url=URL.createObjectURL(file),a=document.createElement('a');
-    a.href=url;a.download=file.name;document.body.appendChild(a);a.click();a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url),60000);
-    setTimeout(()=>openSlipMail(to,d,true),400);close();
+  const download=()=>{const url=URL.createObjectURL(file),a=document.createElement('a');
+    a.href=url;a.download=file.name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);};
+  box.querySelector('#smb-dl').onclick=()=>{download();setTimeout(()=>openSlipMail(to,d,true),400);close();};
+  // Gmail in the browser: the new tab is opened straight from the tap (so it is not blocked), then the PDF is saved
+  box.querySelector('#smb-gmail').onclick=()=>{
+    const subject='Salary slip — '+d.ml+' — '+(biz.name||'');
+    const w=window.open('https://mail.google.com/mail/?view=cm&fs=1&to='+encodeURIComponent(to)+'&su='+encodeURIComponent(subject)+'&body='+encodeURIComponent(slipEmailText(d,true)),'_blank');
+    download();
+    if(!w)toast('Allow pop-ups for this site so Gmail can open',true);else toast('PDF saved to Downloads — attach it in Gmail and press Send');
+    close();
   };
 };
 function openSlipMail(to,d,withPdf){
@@ -5982,7 +6043,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.29.0</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.29.1</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -7036,7 +7097,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.29.0</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.29.1</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -7044,11 +7105,22 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.29.1 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.29.1</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Email slip: the PDF now has the salary slip and the day-by-day statement together</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Email slip: new "Download PDF + open Gmail" — opens Gmail in the browser, addressed to the staff member with the subject and text; just attach the saved PDF and send. No Mail app needed</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.29.0 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.29.0</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.29.0</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Salary history: when you change a salary, choose the month it applies from. Earlier months keep the old salary and duty time</span></div>
