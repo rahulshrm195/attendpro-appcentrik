@@ -49,7 +49,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.29.8';
+const APP_VERSION = 'v1.30.0';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -2225,13 +2225,13 @@ function payStatementHtml(C,mv){
   <b>Duty time: ${E(dutyText(cfg))}</b> on every working day. Pay is worked out per hour on a standard day of <b>${C.stdHours} hours</b>; this is how the salary is calculated and does not shorten the duty time.<br>
   Monthly salary <b>${r0(cfg.base)}</b> ÷ <b>${new Date(C.year,C.month+1,0).getDate()} days</b> in ${ml} = <b>${rs(C.perDay)}</b> per day.<br>
   Standard day = <b>${C.stdHours} hours</b>, so each hour worked is worth <b>${rs(hourly)}</b> (${rs(perMin)} per minute).<br>
-  Each working day pays for the hours actually worked, up to ${C.stdHours} hours. Time beyond that is overtime at <b>${r0(C.otRatePerHour)}/hour</b>${C.otRatePerHour?'':' (overtime is not paid)'}.<br>
+  Each working day pays for the hours actually worked, up to ${C.stdHours} hours. Time beyond that is overtime at <b>${hrRate(C.otRatePerHour)}/hour</b>${C.otRatePerHour?'':' (overtime is not paid)'}.<br>
   Weekly offs are ${C.woPaid?'<b>paid</b> as a full day':'<b>not paid</b>'}; shop holidays are ${C.holidayPaid?'<b>paid</b> as a full day':'<b>not paid</b>'}. Absent days pay nothing.<br>
   Arriving late has ${C.lateD?'a deduction (see below)':'<b>no fine</b>'} — but the minutes not worked are not paid.${C.minMins?' Days with less than '+hm(C.minMins)+' worked count as absent.':''}</div>
   <h2>Day by day</h2><table><thead><tr><th>Date</th><th>Status</th><th>Punches</th><th class="r">Worked</th><th class="r">Paid time</th><th class="r">Short / extra</th><th class="r">Amount</th></tr></thead><tbody>${rows.join('')}</tbody></table>
   <h2>Totals</h2><table><thead><tr><th>Item</th><th class="r">Detail</th><th class="r">Amount</th></tr></thead><tbody>
   ${T('Hours worked (paid up to '+C.stdHours+'h a day)',hm(C.totalWorkedMins)+' × '+rs(hourly)+'/hr',r0(C.basePay)+(capped?' (limited to '+r0(C.maxPay)+')':''))}
-  ${T('Overtime',hm(C.otMins)+' × '+r0(C.otRatePerHour)+'/hr','+'+r0(C.otPay))}
+  ${T('Overtime',hm(C.otMins)+' × '+hrRate(C.otRatePerHour)+'/hr','+'+r0(C.otPay))}
   ${C.woPay?T('Weekly offs',C.weeklyOffPaidDays+' × '+rs(C.perDay),'+'+r0(C.woPay)):''}
   ${C.weeklyOffBonus?T('Worked on weekly off',hm(C.weeklyOffWorkedMins),'+'+r0(C.weeklyOffBonus)):''}
   ${C.holidayPay?T('Holidays',C.holidayDays+' × '+rs(C.perDay),'+'+r0(C.holidayPay)):''}
@@ -2287,8 +2287,12 @@ async function computePayroll(sid,mv,opts){
     var stdMins=Math.round(stdHours*60);
     var minMins=Math.round((cfg.minHours||1)*60); // min to count as present
     // OT rate — resolve based on mode
+    // Rounding: amounts are worked out exactly and rounded once, at the gross (lines are split so they
+    // still add up to it). Months paid before this rule keep the old per-line rounding (calcV 1).
+    const exactCalc=!payRec||(payRec.calcV||1)>=2;
+    const RND=exactCalc?(x=>x):Math.round;
     var otRatePerHour=0;
-    if(cfg.otRateMode==='auto') otRatePerHour=stdMins>0?Math.round(cfg.base/dim/stdHours):0;
+    if(cfg.otRateMode==='auto') otRatePerHour=stdMins>0?RND(cfg.base/dim/stdHours):0;
     else if(cfg.otRateMode==='manual') otRatePerHour=cfg.otRate||0;
     else otRatePerHour=cfg.otRate||0; // legacy / none
 
@@ -2389,9 +2393,9 @@ async function computePayroll(sid,mv,opts){
       var joinDay=parseInt(joiningDate.split('-')[2])||1;
       eligibleDays=upto-joinDay+1;
     }
-    var basePay=stdMins>0?Math.round((totalWorkedMins/stdMins)*perDay):0;
+    var basePay=stdMins>0?RND((totalWorkedMins/stdMins)*perDay):0;
     // Cap at eligible days worth of salary
-    var maxPay=eligibleDays<upto?Math.round(perDay*eligibleDays):cfg.base;
+    var maxPay=eligibleDays<upto?RND(perDay*eligibleDays):cfg.base;
     basePay=Math.min(basePay,maxPay);
 
     // Short hours — informational only, no deduction
@@ -2401,21 +2405,21 @@ async function computePayroll(sid,mv,opts){
     var absentD=0;
 
     // OT pay — hours beyond standard per day × OT rate
-    var otPay=Math.round((otMins/60)*otRatePerHour);
+    var otPay=RND((otMins/60)*otRatePerHour);
     var otH=Math.floor(otMins/60),otM2=otMins%60;
 
     // Weekly off bonus (worked on off day)
-    var weeklyOffBonus=stdMins>0?Math.round((weeklyOffWorkedMins/stdMins)*perDay):0;
+    var weeklyOffBonus=stdMins>0?RND((weeklyOffWorkedMins/stdMins)*perDay):0;
 
     // Weekly Off Paid Days — shown separately if showWoPay enabled
     // Business rule (Settings → Pay Rules); paid unless turned off
     var woPaid=settings.weeklyOffPaid!==false;
-    var woPay=woPaid?Math.round(weeklyOffPaidDays*perDay):0;
+    var woPay=woPaid?RND(weeklyOffPaidDays*perDay):0;
 
     // Late deduction — stays as separate rule (Option A agreed)
     var lateD=0;
     if(cfg.lateRule==='fixed') lateD=late*(cfg.lateAmount||0);
-    else if(cfg.lateRule==='halfday') lateD=Math.floor(late/(cfg.lateHalfAfter||3))*Math.round(perDay/2);
+    else if(cfg.lateRule==='halfday') lateD=Math.floor(late/(cfg.lateHalfAfter||3))*RND(perDay/2);
 
     const incentive=opts.incentive||0;
 
@@ -2433,8 +2437,19 @@ async function computePayroll(sid,mv,opts){
     // Recover this month: what the owner typed, else this month's advances, else the whole balance
     const defaultRecover=totalOutstanding>0?(thisMonthTotal>0?thisMonthTotal:totalOutstanding):0;
     const advRecover=Math.min(opts.advRecover!=null?opts.advRecover:defaultRecover, totalOutstanding);
-    var paidLeaveAmt=Math.round(paidLeaveDays*perDay);
-    var holidayPay=holidayPaid?Math.round(holidayDays*perDay):0;
+    var paidLeaveAmt=RND(paidLeaveDays*perDay);
+    var holidayPay=holidayPaid?RND(holidayDays*perDay):0;
+    if(exactCalc){
+      // Round once: gross = exact total rounded; each line gets whole rupees that add up to it
+      // (floor every line, then give the leftover rupees to the lines with the largest fractions)
+      lateD=Math.round(lateD);
+      const X=[basePay,otPay,weeklyOffBonus,woPay,paidLeaveAmt,holidayPay];
+      const target=Math.round(X.reduce((a,b)=>a+b,0)+incentive-lateD)-incentive+lateD;
+      const F=X.map(Math.floor);let left=target-F.reduce((a,b)=>a+b,0);
+      const ord=X.map((x,i)=>[x-F[i],i]).sort((a,b)=>b[0]-a[0]);
+      for(let k=0;left>0&&k<ord.length;k++,left--)if(X[ord[k][1]]>0)F[ord[k][1]]++;else left++;
+      [basePay,otPay,weeklyOffBonus,woPay,paidLeaveAmt,holidayPay]=F;
+    }
     const netBeforeAdv=Math.max(0,basePay+otPay+incentive+weeklyOffBonus+woPay+paidLeaveAmt+holidayPay-lateD);
     const advActual=Math.min(advRecover,netBeforeAdv);
     const net=Math.max(0,netBeforeAdv-advActual);
@@ -2445,7 +2460,7 @@ async function computePayroll(sid,mv,opts){
       weeklyOffWorkedMins,weeklyOffWorked,weeklyOffPaidDays,paidLeaveDays,holidayDays,holidayPaid,
       perDay,eligibleDays,basePay,otPay,weeklyOffBonus,woPaid,woPay,lateD,incentive,
       totalOutstanding,thisMonthAdvs,thisMonthTotal,carryFwdAmt,defaultRecover,advRecover,
-      paidLeaveAmt,holidayPay,netBeforeAdv,advActual,net,advCarryFwd,dayLog,minMins,maxPay};
+      paidLeaveAmt,holidayPay,netBeforeAdv,advActual,net,advCarryFwd,dayLog,minMins,maxPay,exactCalc};
 }
 
 window.renderPayroll=async function(){
@@ -2531,7 +2546,7 @@ window.renderPayroll=async function(){
     var pbBaseLbl=document.getElementById('pb-base-lbl');
     if(pbBaseLbl){
       var earnedH=Math.floor(totalWorkedMins/60),earnedM2=totalWorkedMins%60;
-      pbBaseLbl.textContent='Base Salary ('+earnedH+'h '+earnedM2+'m @ ₹'+Math.round(perDay/stdHours)+'/hr)';
+      pbBaseLbl.textContent='Base Salary ('+earnedH+'h '+earnedM2+'m @ '+hrRate(perDay/stdHours)+'/hr)';
     }
     R('pb-base','₹'+basePay.toLocaleString('en-IN'));
 
@@ -2549,7 +2564,7 @@ window.renderPayroll=async function(){
     }
 
     R('pb-ot','+₹'+otPay.toLocaleString('en-IN'));
-    R('pb-ot-lbl','Overtime ('+otH+'h '+otM2+'m × ₹'+otRatePerHour+'/hr)');
+    R('pb-ot-lbl','Overtime ('+otH+'h '+otM2+'m × '+hrRate(otRatePerHour)+'/hr)');
     R('pb-incentive','+₹'+incentive.toLocaleString('en-IN'));
 
     var woffHrs=Math.floor(weeklyOffWorkedMins/60),woffMin=weeklyOffWorkedMins%60;
@@ -2603,7 +2618,7 @@ window.renderPayroll=async function(){
       '<div class="stat-box"><div class="stat-num" style="color:var(--accent)">'+late+'</div><div class="stat-lbl">Late</div></div>'+
       '<div class="stat-box"><div class="stat-num" style="color:#a855f7">'+shortDays+'</div><div class="stat-lbl">Short Days</div></div>'+
       '<div class="stat-box"><div class="stat-num" style="color:var(--blue)">'+offDays+'</div><div class="stat-lbl">Off / Leave</div></div>';
-    var otRateDisp=otRatePerHour>0?'₹'+otRatePerHour+'/hr':'₹0/hr (track only)';
+    var otRateDisp=otRatePerHour>0?hrRate(otRatePerHour)+'/hr':'₹0/hr (track only)';
     document.getElementById('pay-ot-detail').textContent='Duty '+dutyText(C.cfg)+' · paid on '+stdHours+'h/day · '+(otMins>0?'OT: '+otH+'h '+otM2+'m · '+otRateDisp+' · ₹'+otPay:'no overtime');
     // Store computed values for markAsPaid
     out.dataset.advActual=advActual;
@@ -2657,7 +2672,7 @@ async function recordPayment(sid,mv,a){
     const salCopy=prev&&prev.salaryCfg?prev.salaryCfg:salaryOnly(await getSalaryCfg(sid,mv).catch(()=>defaultSalaryCfg()));
     const payRec={staffId:sid,staffName:staffName,month:mv,net,netAmount:parseInt(String(net).replace(/[^0-9]/g,''))||0,
       mode,note,advRecovered:recovered,advCarryFwd:balAfter,balanceBefore:balBefore,incentive:incentiveSaved,
-      date:new Date().toLocaleDateString('en-IN'),ts:Date.now(),histId:histRef.id,salaryCfg:salCopy,_updatedAt:serverTimestamp()};
+      date:new Date().toLocaleDateString('en-IN'),ts:Date.now(),histId:histRef.id,salaryCfg:salCopy,calcV:prev?(prev.calcV||1):2,_updatedAt:serverTimestamp()};
     if(prev)payRec.firstPaidDate=prev.firstPaidDate||prev.date;
     const batch=writeBatch(db);
     batch.set(doc(db,p.payment(sid,mv)),payRec);
@@ -3287,6 +3302,8 @@ function dutyText(cfg){
   var s0=st.split(':').map(Number),e0=en.split(':').map(Number),m=(e0[0]*60+e0[1])-(s0[0]*60+s0[1]);
   return f(st)+' – '+f(en)+(m>0?' ('+Math.floor(m/60)+'h'+(m%60?' '+(m%60)+'m':'')+')':'');
 }
+// Hourly rates with paise when not whole (₹48.39), so staff can check the maths
+function hrRate(n){n=+n||0;return '₹'+n.toLocaleString('en-IN',{minimumFractionDigits:Number.isInteger(Math.round(n*100)/100)?0:2,maximumFractionDigits:2});}
 // Slip / email wording: duty length and paid hours clearly labelled, so "10h 30m" is not read as paid time
 function dutyPaidText(cfg){const h=cfg.standardHours||calcAutoStdHoursFromCfg(cfg);
   return 'Duty time: '+dutyText(cfg).replace(/\)$/,' on duty)')+' · Salary counted on '+h+' hours a day';}
@@ -5297,8 +5314,8 @@ function dkDetail(focusKey){
       <span class="${!x.changed&&C.advActual<C.advRecover?'dk-acc':'dk-mute'}" style="font-size:12px${!x.changed&&C.advActual<C.advRecover?';font-weight:600':''}">${x.pay?'Recovered '+dkInr(C.advActual)+(C.advCarryFwd>0?' · '+dkInr(C.advCarryFwd)+' still owed':''):x.changed?'Press Apply to see what carries to next month':C.advActual<C.advRecover?'Salary is only '+dkInr(C.netBeforeAdv)+', so only '+dkInr(C.advActual)+' can be recovered — '+dkInr(C.advCarryFwd)+' carries to next month':C.advCarryFwd>0?dkInr(C.advCarryFwd)+' carries to next month':'✓ Cleared this month'}</span></div>`:'<span class="dk-mute" style="font-size:12px">No advance owed.</span>'}
     ${x.pay||x.fin?'':`<button class="dk-btn ${x.changed?'pri':''}" style="justify-content:center" ${x.changed?'':'disabled'} onclick="deskApply()">✓ Apply to ${dkMonthLabel(DK.mv).split(' ')[0]} salary</button>`}</div>
   <div class="dk-sec"><h4>Salary</h4><div class="dk-lines">
-    ${L('Base pay · '+dkHM(C.totalWorkedMins)+' × '+dkInr(C.perDay/C.stdHours)+'/hr',dkInr(C.basePay))}
-    ${L('Overtime · '+dkHM(C.otMins)+' × '+dkInr(C.otRatePerHour)+'/hr','+'+dkInr(C.otPay))}
+    ${L('Base pay · '+dkHM(C.totalWorkedMins)+' × '+hrRate(C.perDay/C.stdHours)+'/hr',dkInr(C.basePay))}
+    ${L('Overtime · '+dkHM(C.otMins)+' × '+hrRate(C.otRatePerHour)+'/hr','+'+dkInr(C.otPay))}
     ${C.woPay?L('Weekly off pay · '+C.weeklyOffPaidDays+' × '+dkInr(pd),'+'+dkInr(C.woPay)):''}
     ${C.weeklyOffBonus?L('Worked on weekly off · '+dkHM(C.weeklyOffWorkedMins),'+'+dkInr(C.weeklyOffBonus)):''}
     ${C.holidayPay?L('Holiday pay · '+C.holidayDays+' × '+dkInr(pd),'+'+dkInr(C.holidayPay)):''}
@@ -6133,7 +6150,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.29.8</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.30.0</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -7187,7 +7204,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.29.8</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.30.0</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -7195,11 +7212,23 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.30.0 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.30.0</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Salary is now worked out exactly and rounded only once, at the total — so it matches a staff member's own calculation. Each line still shows whole rupees and the lines always add up to the total</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Overtime uses the exact hourly rate (e.g. ₹48.39/hr instead of ₹48), and hourly rates are shown with paise</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Months already paid keep the amounts they were paid with</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.29.8 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.29.8</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.29.8</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Salary slip, PDF and email wording is clearer for staff: "Duty time: 11:00 am – 9:30 pm (10h 30m on duty) · Salary counted on 10 hours a day", late days say "no fine", and short hours explain that time not worked is not paid</span></div>
