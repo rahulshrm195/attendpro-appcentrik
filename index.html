@@ -49,7 +49,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.28.1';
+const APP_VERSION = 'v1.28.2';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -5046,7 +5046,9 @@ async function dkSaveDrafts(ids){const mv=DK.mv,E=DK.edits[mv]||{};const batch=w
   if(!n)return 0;await batch.commit();ids.forEach(sid=>delete E[sid]);return n;}
 window.deskSaveAll=async function(){setLoading(true,'Saving…');try{const n=await dkSaveDrafts(Object.keys(DK.edits[DK.mv]||{}));toast(n?'✓ Saved for '+n+' staff':'Nothing to save');}catch(e){toast('Error: '+e.message,true);}setLoading(false);deskRender(true);};
 function dkDetail(focusKey){
-  const host=dkEl('dk-det');if(!host)return;const x=(DK.payRows||[]).find(r=>r.s.id===DK.sel);if(!x){host.innerHTML='<div class="dk-empty">Pick someone on the left.</div>';return;}
+  const host=dkEl('dk-det');if(!host)return;
+  // Note where the typing cursor is before the panel is redrawn (the redraw removes the old box)
+  const typingHere=!!(document.activeElement&&host.contains(document.activeElement));const x=(DK.payRows||[]).find(r=>r.s.id===DK.sel);if(!x){host.innerHTML='<div class="dk-empty">Pick someone on the left.</div>';return;}
   const s=x.s,C=x.C,cur=DK.mv===curMonthKey(),e=x.e,adv=e?e.adv:(x.saved.adv!=null?x.saved.adv:C.advRecover),inc=e?e.inc:x.saved.inc;
   const paidAmt=x.pay?(x.pay.netAmount!=null?x.pay.netAmount:parseInt(String(x.pay.net||'').replace(/[^0-9]/g,''))||0):0;
   const L=(a,b,k)=>`<div class="ln ${k||''}"><span>${a}</span><span>${b}</span></div>`,pd=Math.round(C.perDay);
@@ -5075,8 +5077,8 @@ function dkDetail(focusKey){
   <div class="dk-sec"><h4>Pay</h4>${x.pay?'':`<div class="dk-f2"><div class="dk-field"><label for="dk-pm">Paid by</label><select id="dk-pm" class="dk-inp"><option value="cash">💵 Cash</option><option value="upi">📱 UPI / GPay</option><option value="bank">🏦 Bank transfer</option></select></div><div class="dk-field"><label for="dk-pn">Note</label><input id="dk-pn" class="dk-inp" placeholder="e.g. UPI ref 1234"></div></div>`}<div id="dk-bank"></div>
     <div class="dk-row">${x.pay?`<button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Slip (PAID)</button>${paidAmt!==C.net?`<button class="dk-btn pri" onclick="deskPay('${ksEsc(s.id)}',true)">Update payment to ${dkInr(C.net)}</button>`:''}`:`<button class="dk-btn pri" ${x.changed||cur?'disabled':''} onclick="deskPay('${ksEsc(s.id)}')">✓ Mark ${dkInr(C.net)} paid</button><button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Preview slip</button>`}<button class="dk-btn" onclick="deskStatement('${ksEsc(s.id)}')">📄 Day-by-day</button><button class="dk-btn" onclick="deskEmailSlip('${ksEsc(s.id)}')" title="${s.email?ksEsc(s.email):'No email saved'}">✉️ Email slip</button></div>
     ${x.changed?'<span class="dk-acc" style="font-size:12px;font-weight:600">Apply or Save all first — the amounts above don\'t include your change yet.</span>':cur&&!x.pay?'<span class="dk-mute" style="font-size:12px">Pay after the month ends.</span>':''}</div>`;
-  if(focusKey){const el=dkEl(focusKey==='inc'?'dk-dinc':'dk-dadv');if(el&&document.activeElement&&document.activeElement.closest&&!document.activeElement.closest('#dk-det')){/* typed in the table: leave focus there */}
-    else if(el){el.focus();const v=el.value;el.value='';el.value=v;}}
+  // Typed in the side panel: put the cursor back in the same box. Typed in the table: leave it there.
+  if(focusKey&&typingHere){const el=dkEl(focusKey==='inc'?'dk-dinc':'dk-dadv');if(el){el.focus();const v=el.value;el.value='';el.value=v;}}
   fillBankBox('dk-bank',s.id);
 }
 window.deskStatement=function(sid){const x=(DK.payRows||[]).find(r=>r.s.id===sid);if(!x)return;if(x.changed)return toast('Apply or Save all first so the statement includes your change',true);
@@ -5841,7 +5843,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.28.1</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.28.2</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6890,7 +6892,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.28.1</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.28.2</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6898,11 +6900,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.28.2 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.28.2</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Fixed: on the computer Payroll page, the advance and incentive boxes in the right panel no longer lose the cursor after each digit</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.28.1 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.28.1</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.28.1</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Faster opening: the start-up screen goes away sooner and the QR scanner is only downloaded when someone scans</span></div>
