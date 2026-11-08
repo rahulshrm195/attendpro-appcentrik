@@ -49,7 +49,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.29.3';
+const APP_VERSION = 'v1.29.4';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -5290,7 +5290,7 @@ function dkDetail(focusKey){
     ${L('Gross',dkInr(C.netBeforeAdv),'tot')}${L('Advance recovered','−'+dkInr(C.advActual))}${C.totalOutstanding>0?L('Advance still owed after this month',dkInr(C.advCarryFwd),C.advCarryFwd>0?'dk-acc':''):''}</div>
     <div class="dk-net"><span>Net pay${x.changed?' (before your change)':''}</span><b>${dkInr(C.net)}</b></div></div>
   <div class="dk-sec"><h4>Pay</h4>${x.pay?'':`<div class="dk-f2"><div class="dk-field"><label for="dk-pm">Paid by</label><select id="dk-pm" class="dk-inp"><option value="cash">💵 Cash</option><option value="upi">📱 UPI / GPay</option><option value="bank">🏦 Bank transfer</option></select></div><div class="dk-field"><label for="dk-pn">Note</label><input id="dk-pn" class="dk-inp" placeholder="e.g. UPI ref 1234"></div></div>`}<div id="dk-bank"></div>
-    <div class="dk-row">${x.pay?`<button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Slip (PAID)</button>${paidAmt!==C.net?`<button class="dk-btn pri" onclick="deskPay('${ksEsc(s.id)}',true)">Update payment to ${dkInr(C.net)}</button>`:''}`:x.fin?`<button class="dk-btn pri" onclick="deskPay('${ksEsc(s.id)}')">✓ Mark ${dkInr(C.net)} paid</button><button class="dk-btn" onclick="deskUnfinalize('${ksEsc(s.id)}')">✏️ Reopen to edit</button><button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Preview slip</button>`
+    <div class="dk-row">${x.pay?`<button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Slip (PAID)</button>${paidAmt!==C.net?`<button class="dk-btn pri" onclick="deskPay('${ksEsc(s.id)}',true)">Update payment to ${dkInr(C.net)}</button>`:''}<button class="dk-btn" onclick="deskUnpay('${ksEsc(s.id)}')" title="Remove this payment so the salary can be changed and paid again">↩ Undo payment</button>`:x.fin?`<button class="dk-btn pri" onclick="deskPay('${ksEsc(s.id)}')">✓ Mark ${dkInr(C.net)} paid</button><button class="dk-btn" onclick="deskUnfinalize('${ksEsc(s.id)}')">✏️ Reopen to edit</button><button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Preview slip</button>`
       :`<button class="dk-btn pri" ${x.changed||cur?'disabled':''} onclick="deskFinalize('${ksEsc(s.id)}')" title="Lock the amounts now — mark paid later, on the day you pay">🔒 Finalize ${dkInr(C.net)}</button><button class="dk-btn" ${x.changed||cur?'disabled':''} onclick="deskPay('${ksEsc(s.id)}')">✓ Mark ${dkInr(C.net)} paid</button><button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Preview slip</button>`}<button class="dk-btn" onclick="deskStatement('${ksEsc(s.id)}')">📄 Day-by-day</button><button class="dk-btn" onclick="deskEmailSlip('${ksEsc(s.id)}')" title="${s.email?ksEsc(s.email):'No email saved'}">✉️ Email slip</button></div>
     ${x.changed?'<span class="dk-acc" style="font-size:12px;font-weight:600">Apply or Save all first — the amounts above don\'t include your change yet.</span>':x.fin?'<span class="dk-mute" style="font-size:12px">Salary finalized on '+ksEsc(x.fin.finalizedAt||'')+' — amounts are locked. Press Mark paid on the day you pay.</span>':!x.pay&&!cur?'<span class="dk-mute" style="font-size:12px">Finalize locks the amounts once checked; Mark paid records the payment (advance is deducted then).</span>':cur&&!x.pay?'<span class="dk-mute" style="font-size:12px">Pay after the month ends.</span>':''}</div>`;
   // Typed in the side panel: put the cursor back in the same box. Typed in the table: leave it there.
@@ -5305,6 +5305,29 @@ window.deskPay=async function(sid,update){const x=(DK.payRows||[]).find(r=>r.s.i
   const ok=await recordPayment(sid,DK.mv,{net:'₹'+x.C.net.toLocaleString('en-IN'),mode:update?(x.pay.mode||'cash'):dkEl('dk-pm').value,note:update?(x.pay.note||''):dkEl('dk-pn').value,advActual:x.C.advActual,incentive:x.C.incentive});
   if(ok){dkAfterPay();const nx=(DK.payRows||[]).find(r=>!r.pay&&r.s.id!==sid);if(nx&&!update)DK.sel=nx.s.id;deskRender(true);}};
 function dkAfterPay(){renderPayHistory();renderAdvList();populatePayrollDropdowns();}
+// Undo a payment: removes the payment and its history entry and gives the recovered advance back to the
+// balance, so the month can be changed (salary settings, incentive, advance) and paid again.
+async function undoPayment(sid,mv){
+  const prev=await fbGet(p.payment(sid,mv));if(!prev)return false;
+  const staffName=(staffArr.find(s=>s.id===sid)||{}).name||sid;
+  const ledger=await fbGet(p.advLedger(sid)).catch(()=>null),cur=ledger&&ledger.balance>0?ledger.balance:0,rec=prev.advRecovered||0;
+  const batch=writeBatch(db);
+  batch.delete(doc(db,p.payment(sid,mv)));
+  if(prev.histId)batch.delete(doc(db,p.payHist()+'/'+prev.histId));
+  if(rec>0){
+    batch.set(doc(db,p.advLedger(sid)),{staffId:sid,staffName:staffName,balance:cur+rec,lastUpdated:new Date().toISOString()},{merge:true});
+    batch.set(doc(collection(db,p.advLedgerLog())),{type:'recovery_undo',staffId:sid,staffName:staffName,month:mv,recovered:-rec,balanceBefore:cur,balanceAfter:cur+rec,date:new Date().toLocaleDateString('en-IN'),ts:Date.now()});
+  }
+  await batch.commit();return true;
+}
+window.deskUnpay=async function(sid){const x=(DK.payRows||[]).find(r=>r.s.id===sid);if(!x||!x.pay)return;
+  const rec=x.pay.advRecovered||0;
+  if(!confirm('Undo '+x.s.name+'\'s payment of '+(x.pay.net||'')+' (marked paid '+(x.pay.date||'')+')?\n\n'+
+    (rec?'The '+dkInr(rec)+' advance recovered goes back to '+x.s.name+'\'s balance.\n':'')+
+    'The salary is calculated again with the current salary settings. Change what you need, then mark it paid again.'))return;
+  setLoading(true,'Undoing payment…');
+  try{if(await undoPayment(sid,DK.mv)){clearSalaryCache(sid);toast('↩ Payment undone — make your changes, then mark paid again');}}catch(e){toast('Error: '+e.message,true);}
+  setLoading(false);dkAfterPay();deskRender(true);};
 // Finalize: lock this month's amounts (incentive, advance to recover, net) without paying yet.
 // Stored on the payroll draft; Mark paid (recordPayment) later records the payment and updates the advance ledger.
 async function dkFinalizeRows(list){const mv=DK.mv,batch=writeBatch(db),now=Date.now(),at=new Date().toLocaleDateString('en-IN');let n=0;
@@ -6092,7 +6115,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.29.3</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.29.4</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -7146,7 +7169,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.29.3</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.29.4</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -7154,11 +7177,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.29.4 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.29.4</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll (computer layout): "↩ Undo payment" on a paid salary — removes the payment, puts the recovered advance back on the balance, and recalculates with the current salary settings so you can correct it and mark it paid again</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.29.3 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.29.3</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.29.3</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Bank details: live checks while typing — "✓ Account numbers match" / "✗ do not match", and the IFSC shows the bank and branch name (e.g. "HDFC Bank · Kothrud, Pune") or warns if it is not found</span></div>
