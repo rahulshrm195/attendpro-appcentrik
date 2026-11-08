@@ -49,7 +49,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.28.3';
+const APP_VERSION = 'v1.28.4';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -4780,14 +4780,15 @@ function dkLive(r){return dkSessions(r).reduce((a,s)=>a+(s.out!=null?(s.mins||Ma
 
 // ── on / off ──
 function deskWanted(){const w=dkEl('owner-panel-wrap');return deskMQ.matches&&localStorage.getItem('ap_classic')!=='1'&&!!w&&w.style.display==='block';}
+const DK_BASE_TITLE=document.title;
 function deskSync(){
   const want=deskWanted(),scr=dkEl('screen-owner');if(!scr)return;
   document.body.classList.toggle('dk-body',want);
   if(want&&!DK.on){DK.on=true;const hv=dkHashView();if(hv)DK.v=hv;scr.classList.add('desk-on');dkEl('desk').hidden=false;deskShell();deskRender();}
-  else if(!want&&DK.on){DK.on=false;dkRestorePages();scr.classList.remove('desk-on');dkEl('desk').hidden=true;}
+  else if(!want&&DK.on){DK.on=false;document.title=DK_BASE_TITLE;dkRestorePages();scr.classList.remove('desk-on');dkEl('desk').hidden=true;}
   const back=dkEl('dk-back');if(back)back.hidden=!(deskMQ.matches&&localStorage.getItem('ap_classic')==='1'&&dkEl('owner-panel-wrap').style.display==='block');
 }
-window.deskClassic=function(on){try{localStorage.setItem('ap_classic',on?'1':'0');}catch(e){}if(on&&DK.on){DK.on=false;dkRestorePages();dkEl('screen-owner').classList.remove('desk-on');dkEl('desk').hidden=true;showOwnerTab('today',document.querySelector('#owner-tabs .tab'));}deskSync();};
+window.deskClassic=function(on){try{localStorage.setItem('ap_classic',on?'1':'0');}catch(e){}if(on&&DK.on){DK.on=false;document.title=DK_BASE_TITLE;dkRestorePages();dkEl('screen-owner').classList.remove('desk-on');dkEl('desk').hidden=true;showOwnerTab('today',document.querySelector('#owner-tabs .tab'));}deskSync();};
 deskMQ.addEventListener('change',deskSync);
 new MutationObserver(deskSync).observe(document.getElementById('owner-panel-wrap'),{attributes:true,attributeFilter:['style']});
 let dkPingT=null;
@@ -4847,6 +4848,8 @@ async function deskRender(quiet){
     dkRestorePages();
     const d=dkEl('desk');if(dkCtxPref===null)d.classList.toggle('dk-noctx',!['today','requests'].includes(DK.v));
     dkEl('dk-crumb').textContent=DK_TITLES[DK.v];
+    // Page name in the browser tab, so several open tabs can be told apart
+    document.title=DK_TITLES[DK.v]+' · AttendPro';
     if(!quiet&&!['fix','settings'].includes(DK.v))dkEl('dk-page').innerHTML='<div class="dk-empty">Loading…</div>';
     await dkLoadCommon();
     dkNav();
@@ -5851,7 +5854,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.28.3</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.28.4</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6900,7 +6903,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.28.3</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.28.4</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6908,11 +6911,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.28.4 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.28.4</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Computer layout: the browser tab shows the page you are on (e.g. "Payroll · AttendPro"), so several open tabs are easy to tell apart</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.28.3 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.28.3</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.28.3</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Computer layout: Cmd-click (Mac) or Ctrl-click (Windows) a sidebar item — Today, Payroll, Staff… — to open it in a new tab. Each page has its own address, and a reload stays on the same page</span></div>
