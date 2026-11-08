@@ -49,7 +49,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.29.7';
+const APP_VERSION = 'v1.29.8';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -2541,7 +2541,7 @@ window.renderPayroll=async function(){
       if(shortDays>0){
         shortRow.style.display='flex';
         var shH=Math.floor(shortMins/60),shM=shortMins%60;
-        R('pb-short-lbl','Short hours: '+shortDays+' day'+(shortDays>1?'s':'')+' · '+shH+'h '+shM+'m less than standard');
+        R('pb-short-lbl','Short hours: '+shortDays+' day'+(shortDays>1?'s':'')+' · '+shH+'h '+shM+'m less than '+stdHours+' hours a day (time not worked is not paid)');
         R('pb-short','₹0');
         var pbShortEl=document.getElementById('pb-short');
         if(pbShortEl)pbShortEl.style.color='var(--muted)';
@@ -2591,7 +2591,7 @@ window.renderPayroll=async function(){
         R('pb-paidleave','+₹'+paidLeaveAmt.toLocaleString('en-IN'));
       } else plRow.style.display='none';
     }
-    R('pb-late-lbl','Late ('+late+' day'+(late!==1?'s':'')+(cfg.lateRule==='fixed'?' × ₹'+(cfg.lateAmount||0):cfg.lateRule==='halfday'?' · ½ day per '+(cfg.lateHalfAfter||3)+' late':'')+')');
+    R('pb-late-lbl','Late ('+late+' day'+(late!==1?'s':'')+(cfg.lateRule==='fixed'?' × ₹'+(cfg.lateAmount||0):cfg.lateRule==='halfday'?' · ½ day per '+(cfg.lateHalfAfter||3)+' late':' · no fine')+')');
     R('pb-late','−₹'+lateD.toLocaleString('en-IN'));
     R('pb-advance','−₹'+advActual.toLocaleString('en-IN'));
     if(advCarryFwd>0) R('pb-adv-carry','⚠️ ₹'+advCarryFwd.toLocaleString('en-IN')+' carries forward');
@@ -3287,6 +3287,9 @@ function dutyText(cfg){
   var s0=st.split(':').map(Number),e0=en.split(':').map(Number),m=(e0[0]*60+e0[1])-(s0[0]*60+s0[1]);
   return f(st)+' – '+f(en)+(m>0?' ('+Math.floor(m/60)+'h'+(m%60?' '+(m%60)+'m':'')+')':'');
 }
+// Slip / email wording: duty length and paid hours clearly labelled, so "10h 30m" is not read as paid time
+function dutyPaidText(cfg){const h=cfg.standardHours||calcAutoStdHoursFromCfg(cfg);
+  return 'Duty time: '+dutyText(cfg).replace(/\)$/,' on duty)')+' · Salary counted on '+h+' hours a day';}
 window.updateDutyNote=function(){
   var el=document.getElementById('ss-duty-note');if(!el)return;
   var st=v('ss-start')||'10:00',en=v('ss-end')||'21:00',h=parseFloat(v('ss-stdhours'))||calcAutoStdHours(st,en);
@@ -4321,7 +4324,7 @@ async function slipData(sid,mv){
   rows.push([g('pb-late-lbl'),g('pb-late')]);
   const out=document.getElementById('payroll-output');
   return {staff,ml,mv,payRec,rows,
-    duty:cfg?'Duty '+dutyText(cfg)+' · paid on '+(cfg.standardHours||calcAutoStdHoursFromCfg(cfg))+'h/day':'',
+    duty:cfg?dutyPaidText(cfg):'',
     gross:g('pb-gross'),adv:g('pb-advance'),net:g('pb-net'),
     owed:parseInt(out&&out.dataset.totalOutstanding)||0,left:parseInt(out&&out.dataset.advCarryFwd)||0,
     notes:[vis('pb-short-row')?g('pb-short-lbl'):'',g('pb-absent-lbl')].filter(Boolean),
@@ -4526,7 +4529,7 @@ window.printSalarySlip=function(){
     html+='<div style="text-align:right"><div style="font-size:11px;font-weight:700;color:#f5a623;text-transform:uppercase;letter-spacing:1px">Salary Slip</div>';
     html+='<div style="font-size:11px;color:#777;margin-top:3px">'+ml+'</div></div></div>';
     var slipCfg=payRec&&payRec.salaryCfg?Object.assign(defaultSalaryCfg(),payRec.salaryCfg):getSalaryCfg._cache&&getSalaryCfg._cache[sid]?salaryCfgFor(getSalaryCfg._cache[sid],mv):null;
-    html+='<div class="srow"><div><div class="sname">'+staff.name+'</div><div class="ssub">@'+staff.username+' · '+ml+(slipCfg?' · Duty '+dutyText(slipCfg)+' · paid on '+(slipCfg.standardHours||calcAutoStdHoursFromCfg(slipCfg))+'h/day':'')+'</div></div>';
+    html+='<div class="srow"><div><div class="sname">'+staff.name+'</div><div class="ssub">@'+staff.username+' · '+ml+(slipCfg?' · '+dutyPaidText(slipCfg):'')+'</div></div>';
     html+=(payRec?'<div class="paid">PAID</div>':'')+'</div>';
     html+='<table><tr><th>Description</th><th style="text-align:right">Amount</th></tr>';
     html+='<tr><td>'+g('pb-base-lbl')+'</td><td class="r g">'+g('pb-base')+'</td></tr>';
@@ -6130,7 +6133,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.29.7</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.29.8</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -7184,7 +7187,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.29.7</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.29.8</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -7192,11 +7195,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.29.8 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.29.8</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Salary slip, PDF and email wording is clearer for staff: "Duty time: 11:00 am – 9:30 pm (10h 30m on duty) · Salary counted on 10 hours a day", late days say "no fine", and short hours explain that time not worked is not paid</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.29.7 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.29.7</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.29.7</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Salary & shift settings opens instantly again (it no longer waits for the server before showing)</span></div>
