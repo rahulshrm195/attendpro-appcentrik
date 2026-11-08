@@ -49,7 +49,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.28.2';
+const APP_VERSION = 'v1.28.3';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -4783,7 +4783,7 @@ function deskWanted(){const w=dkEl('owner-panel-wrap');return deskMQ.matches&&lo
 function deskSync(){
   const want=deskWanted(),scr=dkEl('screen-owner');if(!scr)return;
   document.body.classList.toggle('dk-body',want);
-  if(want&&!DK.on){DK.on=true;scr.classList.add('desk-on');dkEl('desk').hidden=false;deskShell();deskRender();}
+  if(want&&!DK.on){DK.on=true;const hv=dkHashView();if(hv)DK.v=hv;scr.classList.add('desk-on');dkEl('desk').hidden=false;deskShell();deskRender();}
   else if(!want&&DK.on){DK.on=false;dkRestorePages();scr.classList.remove('desk-on');dkEl('desk').hidden=true;}
   const back=dkEl('dk-back');if(back)back.hidden=!(deskMQ.matches&&localStorage.getItem('ap_classic')==='1'&&dkEl('owner-panel-wrap').style.display==='block');
 }
@@ -4831,8 +4831,15 @@ let dkCtxPref=null;
 window.deskToggleCtx=function(){const d=dkEl('desk');if(window.innerWidth<=1380){d.classList.toggle('dk-ctxwide');return;}d.classList.toggle('dk-noctx');dkCtxPref=!d.classList.contains('dk-noctx');};
 function dkNav(){const pend=(DK.data.pending||[]).length,fx=DK.data.fixCount||0;
   dkEl('dk-nav').innerHTML=DK_NAV.map(([g,items])=>'<div class="dk-navg">'+g+'</div><nav class="dk-nav">'+items.map(([k,l,ic])=>{const n=k==='requests'?pend:k==='fix'?fx:0;
-    return '<button class="'+(DK.v===k?'on':'')+'" onclick="deskGo(\''+k+'\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+ic+'</svg>'+l+(n?'<span class="n">'+n+'</span>':'')+'</button>';}).join('')+'</nav>').join('');}
-window.deskGo=function(v,opt){DK.v=v;Object.assign(DK,opt||{});dkCloseModal();deskRender();window.scrollTo(0,0);};
+    return '<a href="#'+k+'" class="'+(DK.v===k?'on':'')+'" onclick="return dkNavClick(event,\''+k+'\')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+ic+'</svg>'+l+(n?'<span class="n">'+n+'</span>':'')+'</a>';}).join('')+'</nav>').join('');}
+// Sidebar items are real links (#payroll etc.): Cmd/Ctrl/Shift-click or middle-click opens the page
+// in a new tab or window; a plain click switches page here.
+window.dkNavClick=function(e,k){if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||e.button>0)return true;e.preventDefault();deskGo(k);return false;};
+// Page from the address (#payroll), so a new tab or a reload opens on that page
+function dkHashView(){const h=decodeURIComponent(location.hash.slice(1));return DK_TITLES[h]?h:null;}
+function dkSetHash(v){try{if(location.hash!=='#'+v)history.replaceState(history.state,'',location.pathname+location.search+'#'+v);}catch(e){}}
+window.deskGo=function(v,opt){DK.v=v;Object.assign(DK,opt||{});dkSetHash(v);dkCloseModal();deskRender();window.scrollTo(0,0);};
+window.addEventListener('hashchange',()=>{const h=dkHashView();if(DK.on&&h&&h!==DK.v)deskGo(h);});
 let dkRendering=false;
 async function deskRender(quiet){
   if(!DK.on||dkRendering)return;dkRendering=true;
@@ -5577,13 +5584,14 @@ body.dk-body .sheet{border-radius:20px}
 .dk-st span:first-child{color:var(--green)}
 .dk-navg{font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:8px 8px 2px;opacity:.8}
 .dk-nav{display:flex;flex-direction:column;gap:1px}
-.dk-nav button{display:flex;align-items:center;gap:10px;border:0;background:none;padding:8px 9px;border-radius:8px;font-weight:600;text-align:left;font-size:13.5px;color:var(--text)}
-.dk-nav button svg{width:17px;height:17px;flex-shrink:0;color:var(--muted)}
-.dk-nav button:hover{background:var(--s2)}
-.dk-nav button.on{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
-.dk-nav button.on svg{color:#fff}
+.dk-nav a{text-decoration:none;cursor:pointer}
+.dk-nav a{display:flex;align-items:center;gap:10px;border:0;background:none;padding:8px 9px;border-radius:8px;font-weight:600;text-align:left;font-size:13.5px;color:var(--text)}
+.dk-nav a svg{width:17px;height:17px;flex-shrink:0;color:var(--muted)}
+.dk-nav a:hover{background:var(--s2)}
+.dk-nav a.on{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
+.dk-nav a.on svg{color:#fff}
 .dk-nav .n{margin-left:auto;font-size:10.5px;font-weight:700;border-radius:20px;padding:1px 7px;background:color-mix(in srgb,var(--red) 18%,transparent);color:var(--red)}
-.dk-nav button.on .n{background:rgba(255,255,255,.25);color:#fff}
+.dk-nav a.on .n{background:rgba(255,255,255,.25);color:#fff}
 .dk-bottom{margin-top:auto;display:grid;gap:8px}
 .dk-qp{border:0;border-radius:10px;padding:11px;font-weight:700;color:#fff!important;background:linear-gradient(135deg,var(--accent),var(--accent2))}
 .dk-link{border:0;background:none;color:var(--muted)!important;font-size:12px;text-decoration:underline;padding:2px}
@@ -5843,7 +5851,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.28.2</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.28.3</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6892,7 +6900,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.28.2</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.28.3</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6900,11 +6908,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
-    <!-- v1.28.2 -->
+    <!-- v1.28.3 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.28.2</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.28.3</span>
         <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Computer layout: Cmd-click (Mac) or Ctrl-click (Windows) a sidebar item — Today, Payroll, Staff… — to open it in a new tab. Each page has its own address, and a reload stays on the same page</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
+    <!-- v1.28.3 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.28.2</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Fixed: on the computer Payroll page, the advance and incentive boxes in the right panel no longer lose the cursor after each digit</span></div>
