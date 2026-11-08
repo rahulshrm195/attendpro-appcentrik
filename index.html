@@ -49,7 +49,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.29.2';
+const APP_VERSION = 'v1.29.3';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -3082,7 +3082,7 @@ async function fillBankBox(elId,sid){
     <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;">🏦 Bank transfer to</div>
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><span>Name: <b>${ksEsc(b.holder)}</b></span><button class="btn btn-ghost btn-xs" style="width:auto" onclick="copyText('${q(b.holder)}','Name')">Copy</button></div>
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><span>A/c no: <b style="font-variant-numeric:tabular-nums;letter-spacing:.5px">${ksEsc(b.acc)}</b></span><button class="btn btn-ghost btn-xs" style="width:auto" onclick="copyText('${q(b.acc)}','Account number')">Copy</button></div>
-    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><span>IFSC: <b>${ksEsc(b.ifsc)}</b></span><button class="btn btn-ghost btn-xs" style="width:auto" onclick="copyText('${q(b.ifsc)}','IFSC')">Copy</button></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;"><span>IFSC: <b>${ksEsc(b.ifsc)}</b>${b.bank?'<br><span style="font-size:12px;color:var(--muted)">'+ksEsc(b.bank)+(b.branch?' · '+ksEsc(b.branch):'')+'</span>':''}</span><button class="btn btn-ghost btn-xs" style="width:auto" onclick="copyText('${q(b.ifsc)}','IFSC')">Copy</button></div>
   </div>`:`<div style="font-size:12px;color:var(--muted);margin:6px 0;">No bank details saved · <a href="#" style="color:var(--accent)" onclick="event.preventDefault();editStaffBank('${q(sid)}')">Add bank details</a></div>`;
 }
 window.editStaffBank=async function(sid){
@@ -3098,13 +3098,44 @@ window.editStaffBank=async function(sid){
     ${inp('bk-holder','Account holder name (as in bank)',cur.holder||s.name,'autocomplete="off"')}
     ${inp('bk-acc','Account number',cur.acc,'inputmode="numeric" autocomplete="off"')}
     ${inp('bk-acc2','Re-enter account number',cur.acc,'inputmode="numeric" autocomplete="off"')}
+    <div id="bk-acc-hint" style="font-size:12.5px;font-weight:600;margin:-8px 0 12px;min-height:16px;"></div>
     ${inp('bk-ifsc','IFSC code',cur.ifsc,'autocapitalize="characters" autocomplete="off" placeholder="e.g. SBIN0001234" maxlength="11"')}
+    <div id="bk-ifsc-hint" style="font-size:12.5px;margin:-8px 0 12px;min-height:16px;"></div>
     <div style="display:flex;gap:10px;margin-top:6px;"><button class="btn btn-primary" id="bk-save">Save</button><button class="btn btn-secondary" id="bk-cancel" style="width:auto;padding:14px 18px;">Cancel</button></div>
     ${cur.acc?'<button class="btn btn-ghost" id="bk-del" style="margin-top:10px;color:var(--red);">Remove bank details</button>':''}</div>`;
   document.body.appendChild(box);
   const close=()=>box.remove();
   box.onclick=e=>{if(e.target===box)close();};
   box.querySelector('#bk-cancel').onclick=close;
+  // Live checks while typing: the two account numbers, and the IFSC (format, then bank + branch lookup)
+  const G='var(--green)',RD='var(--red)',MU='var(--muted)';
+  const hint=(id,txt,col)=>{const e=document.getElementById(id);if(e){e.textContent=txt;e.style.color=col;}};
+  const accChk=()=>{const a=v('bk-acc').replace(/[\s-]/g,''),b=v('bk-acc2').replace(/[\s-]/g,'');
+    if(!a&&!b)return hint('bk-acc-hint','','');
+    if(a&&!/^\d+$/.test(a))return hint('bk-acc-hint','✗ Account number should have digits only',RD);
+    if(a&&(a.length<9||a.length>18))return hint('bk-acc-hint',a.length+' digits — account numbers have 9 to 18',b?RD:MU);
+    if(!b)return hint('bk-acc-hint','Type the account number again below to confirm it',MU);
+    if(a===b)return hint('bk-acc-hint','✓ Account numbers match ('+a.length+' digits)',G);
+    if(a.startsWith(b))return hint('bk-acc-hint','Keep typing… ('+b.length+' of '+a.length+' digits)',MU);
+    hint('bk-acc-hint','✗ Account numbers do not match',RD);};
+  let ifscInfo=null,ifscT=0,ifscSeq=0;
+  const ifscChk=()=>{const el=document.getElementById('bk-ifsc'),c=el.value.replace(/\s/g,'').toUpperCase();if(el.value!==c)el.value=c;
+    ifscInfo=null;clearTimeout(ifscT);const my=++ifscSeq;
+    if(!c)return hint('bk-ifsc-hint','','');
+    if(c.length<11)return hint('bk-ifsc-hint',c.length+' of 11 characters (like SBIN0001234)',MU);
+    if(!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(c))return hint('bk-ifsc-hint','✗ Not a valid IFSC — 4 letters, then 0, then 6 letters/numbers',RD);
+    hint('bk-ifsc-hint','Checking IFSC…',MU);
+    ifscT=setTimeout(async()=>{
+      try{const r=await fetch('https://ifsc.razorpay.com/'+c);if(my!==ifscSeq)return;
+        if(r.status===404){ifscInfo={notFound:true};return hint('bk-ifsc-hint','✗ This IFSC was not found — please check it',RD);}
+        const j=await r.json();if(my!==ifscSeq)return;
+        ifscInfo={bank:j.BANK||'',branch:[j.BRANCH,j.CITY].filter(Boolean).join(', ')};
+        hint('bk-ifsc-hint','✓ '+ifscInfo.bank+(ifscInfo.branch?' · '+ifscInfo.branch:''),G);
+      }catch(e){if(my===ifscSeq)hint('bk-ifsc-hint','✓ Format is correct (bank name could not be checked right now)',G);}
+    },350);};
+  ['bk-acc','bk-acc2'].forEach(id=>document.getElementById(id).addEventListener('input',accChk));
+  document.getElementById('bk-ifsc').addEventListener('input',ifscChk);
+  accChk();if(cur.ifsc)ifscChk();
   const done=()=>{close();renderStaffList();const pb=document.getElementById('pay-bank-box');if(pb&&v('pay-staff-sel')===sid)fillBankBox('pay-bank-box',sid);if(document.getElementById('dk-bank'))fillBankBox('dk-bank',sid);};
   const del=box.querySelector('#bk-del');
   if(del)del.onclick=async()=>{if(!confirm('Remove bank details for '+s.name+'?'))return;
@@ -3115,7 +3146,9 @@ window.editStaffBank=async function(sid){
     if(!/^\d{9,18}$/.test(acc))return toast('Account number should be 9–18 digits',true);
     if(acc!==acc2)return toast('The two account numbers do not match',true);
     if(!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc))return toast('IFSC should be 11 characters, like SBIN0001234',true);
+    if(ifscInfo&&ifscInfo.notFound&&!confirm('The IFSC '+ifsc+' was not found in the bank list. Save it anyway?'))return;
     const rec={holder,acc,ifsc,staffId:sid,staffName:s.name};
+    if(ifscInfo&&ifscInfo.bank){rec.bank=ifscInfo.bank;rec.branch=ifscInfo.branch||'';}
     try{await fbSet(p.staffBank(sid),rec);bankCache[sid]=Object.assign({id:sid},rec);toast('✓ Bank details saved');done();}
     catch(e){toast('Error: '+e.message,true);}
   };
@@ -5195,8 +5228,18 @@ async function dkPay(){
     <div class="dk-selbar" id="dk-savebar" ${chN?'':'hidden'}><span><b id="dk-chn">${chN}</b> changed — salaries update when you save</span><span class="dk-sp"></span><button class="dk-btn ghost" onclick="deskUndo()">Undo</button><button class="dk-btn pri" onclick="deskSaveAll()">Save all</button></div>
     <div class="dk-selbar" ${DK.pick.size&&!chN?'':'hidden'}><span><b>${DK.pick.size}</b> selected · <b>${dkInr(pickNet)}</b></span><span class="dk-sp"></span><button class="dk-btn ghost" onclick="DK.pick.clear();deskRender(true)">Clear</button>${[...DK.pick].some(id=>{const r=rows.find(q=>q.s.id===id);return r&&!r.fin;})?'<button class="dk-btn" onclick="deskFinalizePicked()">🔒 Finalize selected</button>':''}<button class="dk-btn pri" onclick="deskPayPicked()">Pay selected</button></div>
   </div><div class="dk-card dk-det" id="dk-det"></div></div>`;
-  dkDetail();
+  dkDetail();dkFitDet();
 }
+// The salary panel fits the visible space below its top (never taller than the screen), so it never
+// pushes the page into scrolling and stays fully in view; it scrolls inside itself instead.
+let dkFitRaf=0;
+function dkFitDet(){cancelAnimationFrame(dkFitRaf);dkFitRaf=requestAnimationFrame(()=>{const d=dkEl('dk-det');if(!d||!DK.on)return;
+  if(getComputedStyle(d).position!=='sticky'){d.style.maxHeight='';return;}
+  // Bottom: the screen edge, or the end of the staff list when that is higher (a sticky panel cannot
+  // go below its column, so a taller panel would be pushed up under the top bar)
+  const top=Math.max(70,d.getBoundingClientRect().top),sh=dkEl('dk-sheet'),sb=sh?sh.getBoundingClientRect().bottom:window.innerHeight;
+  const bottom=Math.min(window.innerHeight-16,Math.max(sb,top+400));d.style.maxHeight=Math.max(260,bottom-top)+'px';});}
+window.addEventListener('scroll',dkFitDet,{passive:true});window.addEventListener('resize',dkFitDet);
 window.deskPayMonth=function(d){const mv=dkShiftMv(DK.mv||prevMonthKey(),d);if(mv>curMonthKey())return;DK.mv=mv;DK.pick.clear();deskRender();};
 window.deskSel=function(sid){DK.sel=sid;document.querySelectorAll('#dk-sheet tr.k').forEach(tr=>tr.classList.toggle('sel',tr.getAttribute('onclick').indexOf("'"+sid+"'")>=0));dkDetail();};
 window.deskPick=function(sid,on){on?DK.pick.add(sid):DK.pick.delete(sid);deskRender(true);};
@@ -6049,7 +6092,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.29.2</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.29.3</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -7103,7 +7146,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.29.2</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.29.3</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -7111,11 +7154,22 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.29.3 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.29.3</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Bank details: live checks while typing — "✓ Account numbers match" / "✗ do not match", and the IFSC shows the bank and branch name (e.g. "HDFC Bank · Kothrud, Pune") or warns if it is not found</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll (computer layout): the right panel no longer slides under the top bar when the page scrolls — the selected name stays in view</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.29.2 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.29.2</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.29.2</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll (computer layout): the selected staff member's name stays at the top of the right panel while you scroll, and their row in the list is clearly highlighted</span></div>
