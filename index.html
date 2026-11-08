@@ -49,7 +49,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.28.5';
+const APP_VERSION = 'v1.29.0';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -908,7 +908,7 @@ async function renderMyHistory(){
     const recs={}; all.filter(r=>r.date?.startsWith(prefix)).forEach(r=>recs[r.id]=r);
     const marksAll=await fbList(p.days());
     const marks={}; marksAll.filter(m=>m.date?.startsWith(prefix)&&(!m.staffId||m.staffId===currentStaff.id)).forEach(m=>marks[m.date+(m.staffId?'_'+m.staffId:'')]=m);
-    var myCfg=await getSalaryCfg(currentStaff.id);
+    var myCfg=await getSalaryCfg(currentStaff.id,prefix);
     var myWeeklyOff=myCfg.weeklyOff>=0?myCfg.weeklyOff:-1;
     var myStdH=myCfg.standardHours||calcAutoStdHoursFromCfg(myCfg);
     var myMinH=myCfg.minHours||1;
@@ -1089,7 +1089,7 @@ window.renderFixList=async function(){
     var today=todayStr();
     // Context for "needs a check" flags: each staff's standard hours / start time, leave, holidays, weekly off
     var sids=[];recs.forEach(function(r){if(sids.indexOf(r.staffId)<0)sids.push(r.staffId);});
-    var cfgs=await Promise.all(sids.map(function(id){return getSalaryCfg(id).catch(function(){return null;});}));
+    var cfgs=await Promise.all(sids.map(function(id){return getSalaryCfg(id,info.prefix).catch(function(){return null;});}));
     var cfgMap={};sids.forEach(function(id,i){cfgMap[id]=cfgs[i]||defaultSalaryCfg();});
     if(!window._marksCache)window._marksCache={};
     var marksAll=window._marksCache[info.prefix]||await fbList(p.days()).catch(function(){return [];});
@@ -1745,7 +1745,7 @@ window.renderReport=async function(){
     var marksPromise=window._marksCache[prefix]
       ? Promise.resolve(window._marksCache[prefix])
       : fbList(p.days()).then(function(all){window._marksCache[prefix]=all;return all;});
-    var cfgPromise=sid!=='all'?getSalaryCfg(sid):Promise.resolve(null);
+    var cfgPromise=sid!=='all'?getSalaryCfg(sid,prefix):Promise.resolve(null);
     var results=await Promise.all([recsPromise,marksPromise,cfgPromise]);
     var recsAll=results[0],marksAll=results[1],cfg=results[2];
     const recs={};recsAll.forEach(function(r){recs[r.staffId+'_'+r.date]=r;});
@@ -1940,7 +1940,23 @@ window.exportAttendancePDF=async function(){
   }catch(e){toast('PDF failed: '+e.message,true);}
   setLoading(false);
 };
-async function getSalaryCfg(sid){
+// ── Salary history ──
+// The salary_config doc holds the current settings, plus:
+//   from:    'YYYY-MM' — first month the current settings apply (absent = all months)
+//   history: [{from:'YYYY-MM'|null, ...settings}] — earlier settings, each used from its month
+//            until the next one starts (from:null = from the beginning)
+// salaryCfgFor() picks the settings for one month. Paid months use the copy saved with the payment.
+const SAL_KEYS=['base','weeklyOff','startTime','endTime','standardHours','minHours','otRateMode','otRate','showWoPay','lateRule','lateAmount','lateHalfAfter'];
+function salaryOnly(c){const o={};SAL_KEYS.forEach(k=>{if(c&&c[k]!==undefined)o[k]=c[k];});return o;}
+function salaryCfgFor(raw,mv){
+  raw=raw||defaultSalaryCfg();
+  if(!raw.from||!mv||mv>=raw.from)return raw;
+  const h=(raw.history||[]).filter(e=>!e.from||e.from<=mv).sort((a,b)=>(a.from||'').localeCompare(b.from||''));
+  const e=h.length?h[h.length-1]:(raw.history||[]).slice().sort((a,b)=>(a.from||'').localeCompare(b.from||''))[0];
+  return e?Object.assign(defaultSalaryCfg(),salaryOnly(e)):raw;
+}
+// The stored doc with its history (cached)
+async function getSalaryCfgRaw(sid){
   if(!getSalaryCfg._cache) getSalaryCfg._cache={};
   if(getSalaryCfg._cache[sid]) return getSalaryCfg._cache[sid];
   try{
@@ -1951,6 +1967,8 @@ async function getSalaryCfg(sid){
   }
   catch{return ls.get('ap_salary_'+sid,defaultSalaryCfg());}
 }
+// Settings in force for a month (default: this month)
+async function getSalaryCfg(sid,mv){return salaryCfgFor(await getSalaryCfgRaw(sid),mv||curMonthKey());}
 window.clearSalaryCache=function(sid){if(getSalaryCfg._cache)delete getSalaryCfg._cache[sid];};
 function defaultSalaryCfg(){return {base:0,weeklyOff:-1,startTime:'10:00',endTime:'21:00',standardHours:0,minHours:1,otRateMode:'none',otRate:0,lateRule:'fixed',lateAmount:50,lateHalfAfter:3,showWoPay:false};}
 function calcAutoStdHoursFromCfg(cfg){
@@ -2247,8 +2265,10 @@ async function computePayroll(sid,mv,opts){
     opts=opts||{};const pre=opts.pre||{};
     const staff=staffArr.find(function(s){return s.id===sid;});if(!staff)return null;
     const year=parseInt(mv.split('-')[0]),month=parseInt(mv.split('-')[1])-1;
-    const cfg=pre.cfgs&&pre.cfgs[sid]?pre.cfgs[sid]:await getSalaryCfg(sid);
+    const rawCfg=pre.cfgs&&pre.cfgs[sid]?pre.cfgs[sid]:await getSalaryCfgRaw(sid);
     const payRec=opts.payRec!==undefined?opts.payRec:await fbGet(p.payment(sid,mv)).catch(()=>null);
+    // A paid month keeps the salary it was paid on; otherwise the settings in force that month
+    const cfg=payRec&&payRec.salaryCfg?Object.assign(defaultSalaryCfg(),payRec.salaryCfg):salaryCfgFor(rawCfg,mv);
     const joiningDate=staff.joiningDate||null;
     const prefix=year+'-'+pad(month+1);
     const recsAll=pre.recs?pre.recs.filter(function(r){return r.staffId===sid&&r.date&&r.date.startsWith(prefix);}):await fbList(p.recs(),where('staffId','==',sid),where('date','>=',prefix+'-01'),where('date','<=',prefix+'-31'));
@@ -2447,8 +2467,8 @@ window.renderPayroll=async function(){
   out.style.display='block';
   setLoading(true,'Calculating payroll…');
   try{
-    const cfg=await getSalaryCfg(sid);
     const payRec=await fbGet(p.payment(sid,mv)).catch(()=>null);
+    const cfg=payRec&&payRec.salaryCfg?Object.assign(defaultSalaryCfg(),payRec.salaryCfg):await getSalaryCfg(sid,mv);
     if(newCtx&&payRec){
       if(incInp)incInp.value=payRec.incentive||'';
       if(advInp0&&payRec.advRecovered!=null){advInp0.value=payRec.advRecovered;advInp0.dataset.userEdited='1';}
@@ -2633,9 +2653,11 @@ async function recordPayment(sid,mv,a){
     const recovered=Math.min(advActual,balBefore);
     const balAfter=balBefore-recovered;
     const histRef=prev&&prev.histId?doc(db,p.payHist()+'/'+prev.histId):doc(collection(db,p.payHist()));
+    // Copy of the salary settings this month was paid on, so later salary changes never alter it
+    const salCopy=prev&&prev.salaryCfg?prev.salaryCfg:salaryOnly(await getSalaryCfg(sid,mv).catch(()=>defaultSalaryCfg()));
     const payRec={staffId:sid,staffName:staffName,month:mv,net,netAmount:parseInt(String(net).replace(/[^0-9]/g,''))||0,
       mode,note,advRecovered:recovered,advCarryFwd:balAfter,balanceBefore:balBefore,incentive:incentiveSaved,
-      date:new Date().toLocaleDateString('en-IN'),ts:Date.now(),histId:histRef.id,_updatedAt:serverTimestamp()};
+      date:new Date().toLocaleDateString('en-IN'),ts:Date.now(),histId:histRef.id,salaryCfg:salCopy,_updatedAt:serverTimestamp()};
     if(prev)payRec.firstPaidDate=prev.firstPaidDate||prev.date;
     const batch=writeBatch(db);
     batch.set(doc(db,p.payment(sid,mv)),payRec);
@@ -3136,8 +3158,66 @@ window.openSalarySettings=async function(staffId){
   const s=staffArr.find(x=>x.id===staffId);
   document.getElementById('salary-sheet-name').textContent=s?.name||'';
   setLoading(true,'Loading salary config…');
-  const cfg=await getSalaryCfg(staffId);
+  clearSalaryCache(staffId);
+  const raw=await getSalaryCfgRaw(staffId);
   setLoading(false);
+  ssRaw=raw;ssEditIdx=null;
+  ssFill(raw);ssRenderHistory();
+  openSheet('sheet-salary');
+};
+// Salary sheet state: the stored doc, and which earlier period is being edited (null = current settings)
+let ssRaw=null,ssEditIdx=null;
+const ssMonthLbl=mv=>mv?new Date(+mv.slice(0,4),+mv.slice(5,7)-1,1).toLocaleString('en-IN',{month:'short',year:'numeric'}):'';
+const ssShiftMv=(mv,d)=>{const t=new Date(+mv.slice(0,4),+mv.slice(5,7)-1+d,1);return t.getFullYear()+'-'+pad(t.getMonth()+1);};
+function ssSorted(){return (ssRaw&&ssRaw.history||[]).map((e,i)=>({e,i})).sort((a,b)=>(a.e.from||'').localeCompare(b.e.from||''));}
+function ssPeriodLbl(from,next){return from&&next?ssMonthLbl(from)+' – '+ssMonthLbl(ssShiftMv(next,-1)):next?'Up to '+ssMonthLbl(ssShiftMv(next,-1)):from?'From '+ssMonthLbl(from):'All months';}
+// List of salary periods (oldest first) with edit / delete for earlier ones
+function ssRenderHistory(){
+  const el=document.getElementById('ss-history'),fw=document.getElementById('ss-from-wrap'),bn=document.getElementById('ss-period-banner');
+  const list=ssSorted(),cur=curMonthKey(),line=c=>'₹'+(c.base||0).toLocaleString('en-IN')+' · '+dutyText(c);
+  if(ssEditIdx!=null){
+    const k=list.findIndex(x=>x.i===ssEditIdx),nx=list[k+1]?list[k+1].e.from:ssRaw.from;
+    fw.style.display='none';bn.style.display='block';
+    bn.innerHTML='✏️ Editing the earlier salary used <b>'+ssPeriodLbl(list[k].e.from,nx).replace(/^Up to/,'up to')+'</b>. <a href="#" onclick="ssEditPeriod(null);return false;" style="color:var(--accent);font-weight:600;">Back to current settings</a>';
+    el.innerHTML='';return;
+  }
+  bn.style.display='none';fw.style.display='block';
+  // "apply from": this month by default; a few months back and ahead
+  const sel=document.getElementById('ss-from');let opts='';
+  for(let d=-6;d<=3;d++){const m=ssShiftMv(cur,d);if(ssRaw.from&&m<ssRaw.from&&d<0)continue;opts+='<option value="'+m+'"'+(d===0?' selected':'')+'>'+ssMonthLbl(m)+(d===0?' (this month)':'')+'</option>';}
+  sel.innerHTML=opts+'<option value="">Correct the current settings (no new period)</option>';
+  let h='<div class="form-label" style="margin-bottom:6px;">Salary history</div>';
+  if(!list.length){
+    h+='<div style="font-size:12px;color:var(--muted);margin-bottom:8px;">One salary for all months.</div>'+
+      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px;"><span>Salary was different before</span><select class="form-input form-select" id="ss-add-from" style="width:auto;padding:6px 30px 6px 10px;">'+
+      Array.from({length:12},(_,i)=>ssShiftMv(cur,1-i)).map((m,i)=>'<option value="'+m+'"'+(i===1?' selected':'')+'>'+ssMonthLbl(m)+'</option>').join('')+
+      '</select><button class="btn btn-secondary btn-sm" onclick="ssAddEarlier()">＋ Add earlier salary</button></div>';
+  } else {
+    list.forEach((x,k)=>{const nx=list[k+1]?list[k+1].e.from:ssRaw.from;
+      h+='<div class="card-sm" style="display:flex;align-items:center;gap:10px;margin-bottom:6px;"><div style="flex:1;min-width:0;"><div style="font-weight:600;font-size:13px;">'+ssPeriodLbl(x.e.from,nx)+'</div><div style="font-size:12px;color:var(--muted);">'+line(x.e)+'</div></div>'+
+        '<button class="btn btn-secondary btn-sm" onclick="ssEditPeriod('+x.i+')">Edit</button><button class="btn btn-secondary btn-sm" onclick="ssDeletePeriod('+x.i+')">Delete</button></div>';});
+    h+='<div class="card-sm" style="margin-bottom:6px;border-color:rgba(245,166,35,.35);"><div style="font-weight:600;font-size:13px;">'+ssPeriodLbl(ssRaw.from,null)+' · current</div><div style="font-size:12px;color:var(--muted);">'+line(ssRaw)+' — shown in the form above</div></div>';
+  }
+  el.innerHTML=h;
+}
+window.ssEditPeriod=function(i){ssEditIdx=i;ssFill(i==null?ssRaw:Object.assign(defaultSalaryCfg(),ssRaw.history[i]));ssRenderHistory();};
+// The current salary started in the chosen month; before it, an earlier salary (filled in next)
+window.ssAddEarlier=async function(){
+  const m=v('ss-add-from');if(!m||!editingSalaryStaffId)return;
+  const hist=[Object.assign({from:null},salaryOnly(ssRaw))];
+  try{await fbSet(p.salary(editingSalaryStaffId),{from:m,history:hist});}catch(e){return toast('Error: '+e.message,true);}
+  clearSalaryCache(editingSalaryStaffId);ssRaw=Object.assign({},ssRaw,{from:m,history:hist});
+  ssEditPeriod(0);toast('Now enter the salary used up to '+ssMonthLbl(ssShiftMv(m,-1))+', then Save');
+};
+window.ssDeletePeriod=async function(i){
+  const e=ssRaw.history[i];if(!e||!confirm('Delete this earlier salary ('+'₹'+(e.base||0).toLocaleString('en-IN')+')? Its months will use the next salary instead.'))return;
+  const hist=ssRaw.history.filter((_,k)=>k!==i),upd={history:hist};
+  if(!hist.length)upd.from=null;
+  else if(!hist.some(x=>!x.from)){const first=hist.slice().sort((a,b)=>(a.from||'').localeCompare(b.from||''))[0];first.from=null;}
+  try{await fbSet(p.salary(editingSalaryStaffId),upd);}catch(err){return toast('Error: '+err.message,true);}
+  clearSalaryCache(editingSalaryStaffId);ssRaw=Object.assign({},ssRaw,upd);ssEditIdx=null;ssFill(ssRaw);ssRenderHistory();deskPing(true);toast('✓ Earlier salary deleted');
+};
+function ssFill(cfg){
   document.getElementById('ss-base').value=cfg.base||0;
   document.getElementById('ss-weeklyoff').value=cfg.weeklyOff!=null?cfg.weeklyOff:-1;
   // Show/hide WO pay option based on whether weekly off is set
@@ -3159,8 +3239,7 @@ window.openSalarySettings=async function(staffId){
   document.getElementById('ss-lateafter').value=cfg.lateHalfAfter||3;
   toggleLateRule();
   updateDutyNote();
-  openSheet('sheet-salary');
-};
+}
 // "10:00 am – 9:30 pm (11h 30m)" — the duty time, shown next to the paid standard hours everywhere
 function dutyText(cfg){
   var st=(cfg&&cfg.startTime)||'10:00',en=(cfg&&cfg.endTime)||'21:00';
@@ -3227,13 +3306,31 @@ window.saveSalarySettings=async function(){
     lateHalfAfter:parseInt(v('ss-lateafter'))||3
   };
   try{
-    await fbSet(p.salary(editingSalaryStaffId),cfg);
-    ls.set('ap_salary_'+editingSalaryStaffId,cfg);
-    clearSalaryCache(editingSalaryStaffId);
-    const s=staffArr.find(x=>x.id===editingSalaryStaffId);
-    if(s){s._startTime=cfg.startTime;ls.set('ap_staff_cache',staffArr);}
-    closeSheet('sheet-salary');
-    toast('✓ Salary settings saved for '+staffArr.find(x=>x.id===editingSalaryStaffId)?.name);
+    const sid=editingSalaryStaffId,nm=staffArr.find(x=>x.id===sid)?.name||'';
+    clearSalaryCache(sid);
+    const raw=await getSalaryCfgRaw(sid);
+    let hist=(raw.history||[]).map(e=>Object.assign({},e)),from=raw.from||null,msg;
+    if(ssEditIdx!=null){
+      // Editing an earlier period: only that entry changes
+      if(!hist[ssEditIdx])throw new Error('That salary period no longer exists — reopen the sheet');
+      hist[ssEditIdx]=Object.assign({from:hist[ssEditIdx].from||null},cfg);
+      await fbSet(p.salary(sid),{history:hist});
+      msg='✓ Earlier salary saved for '+nm;
+    } else {
+      const M=v('ss-from'),same=JSON.stringify(salaryOnly(raw))===JSON.stringify(salaryOnly(Object.assign({},raw,cfg)));
+      if(M&&!same&&(!from||M>from)){hist.push(Object.assign({from:from},salaryOnly(raw)));from=M;}  // new period from M
+      else if(M&&!same&&M<from){hist=hist.filter(e=>!e.from||e.from<M);from=M;}                     // starts earlier than before
+      await fbSet(p.salary(sid),Object.assign({},cfg,{from:from,history:hist}));
+      msg='✓ Salary saved for '+nm+(M&&!same&&from===M&&hist.length?' — applies from '+ssMonthLbl(M):'');
+    }
+    clearSalaryCache(sid);
+    const now=await getSalaryCfg(sid);
+    ls.set('ap_salary_'+sid,salaryOnly(now));
+    const s=staffArr.find(x=>x.id===sid);
+    if(s){s._startTime=now.startTime;ls.set('ap_staff_cache',staffArr);}
+    ssEditIdx=null;
+    closeSheet('sheet-salary');deskPing(true);
+    toast(msg);
   }catch(e){toast('Error: '+e.message,true);}
 };
 
@@ -4175,7 +4272,7 @@ async function slipData(sid,mv){
   const ml=new Date(parseInt(mv.split('-')[0]),parseInt(mv.split('-')[1])-1,1).toLocaleString('en-IN',{month:'long',year:'numeric'});
   let payRec=null;try{payRec=await fbGet(p.payment(sid,mv));}catch(e){}
   let bank=null;if(payRec&&payRec.mode==='bank'){try{bank=(await loadBanks())[sid];}catch(e){}}
-  const cfg=getSalaryCfg._cache&&getSalaryCfg._cache[sid];
+  const cfg=payRec&&payRec.salaryCfg?Object.assign(defaultSalaryCfg(),payRec.salaryCfg):getSalaryCfg._cache&&getSalaryCfg._cache[sid]?salaryCfgFor(getSalaryCfg._cache[sid],mv):null;
   const rows=[[g('pb-base-lbl'),g('pb-base')],[g('pb-ot-lbl'),g('pb-ot')],['Sales Incentive',g('pb-incentive')]];
   if(vis('pb-woff-row'))rows.push([g('pb-woff-lbl'),g('pb-woff-bonus')]);
   if(vis('pb-wopay-row'))rows.push([g('pb-wopay-lbl'),g('pb-wopay')]);
@@ -4327,7 +4424,7 @@ window.printSalarySlip=function(){
     html+='<div class="hdr"><div><div class="bname">'+(biz.name||'')+'</div><div class="bsub">'+(biz.location||'')+'</div></div>';
     html+='<div style="text-align:right"><div style="font-size:11px;font-weight:700;color:#f5a623;text-transform:uppercase;letter-spacing:1px">Salary Slip</div>';
     html+='<div style="font-size:11px;color:#777;margin-top:3px">'+ml+'</div></div></div>';
-    var slipCfg=getSalaryCfg._cache&&getSalaryCfg._cache[sid];
+    var slipCfg=payRec&&payRec.salaryCfg?Object.assign(defaultSalaryCfg(),payRec.salaryCfg):getSalaryCfg._cache&&getSalaryCfg._cache[sid]?salaryCfgFor(getSalaryCfg._cache[sid],mv):null;
     html+='<div class="srow"><div><div class="sname">'+staff.name+'</div><div class="ssub">@'+staff.username+' · '+ml+(slipCfg?' · Duty '+dutyText(slipCfg)+' · paid on '+(slipCfg.standardHours||calcAutoStdHoursFromCfg(slipCfg))+'h/day':'')+'</div></div>';
     html+=(payRec?'<div class="paid">PAID</div>':'')+'</div>';
     html+='<table><tr><th>Description</th><th style="text-align:right">Amount</th></tr>';
@@ -4939,7 +5036,7 @@ function toMinHHMM(t){const [h,m]=String(t||'0:0').split(':').map(Number);return
 async function dkAtt(){
   const mv=DK.regMv||curMonthKey(),[Y,M]=mv.split('-').map(Number),dim=new Date(Y,M,0).getDate(),today=todayStr();
   const act=staffArr.filter(s=>s.active);
-  const [recs,marksAll,cfgs]=await Promise.all([dkMonthRecs(mv),dkMarks(),Promise.all(act.map(s=>getSalaryCfg(s.id).catch(()=>defaultSalaryCfg())))]);
+  const [recs,marksAll,cfgs]=await Promise.all([dkMonthRecs(mv),dkMarks(),Promise.all(act.map(s=>getSalaryCfg(s.id,mv).catch(()=>defaultSalaryCfg())))]);
   const R={};recs.forEach(r=>R[r.staffId+'_'+r.date]=r);const MK={};marksAll.forEach(m=>{if(m.date&&m.date.startsWith(mv))MK[m.date+(m.staffId?'_'+m.staffId:'')]=m;});
   const D=Array.from({length:dim},(_,i)=>i+1);
   const body=act.map((s,i)=>{const c=cfgs[i]||defaultSalaryCfg(),std=(c.standardHours||calcAutoStdHoursFromCfg(c))*60;let P=0,A=0,L=0,T=0;
@@ -4991,7 +5088,7 @@ async function dkPay(){
   // Inactive staff only when they worked this month and still owe (final settlement) — not every month after they left
   const list=staffArr.filter(s=>s.active||(ledgers[s.id]&&ledgers[s.id].balance>0&&recs.some(r=>r.staffId===s.id)));
   const [marks,advs,cfgA,payA,draftA]=await Promise.all([dkMarks(),fbList(p.advances()).catch(()=>[]),
-    Promise.all(list.map(s=>getSalaryCfg(s.id).catch(()=>defaultSalaryCfg()))),Promise.all(list.map(s=>fbGet(p.payment(s.id,mv)).catch(()=>null))),Promise.all(list.map(s=>fbGet(p.payDraft(s.id,mv)).catch(()=>null)))]);
+    Promise.all(list.map(s=>getSalaryCfgRaw(s.id).catch(()=>defaultSalaryCfg()))),Promise.all(list.map(s=>fbGet(p.payment(s.id,mv)).catch(()=>null))),Promise.all(list.map(s=>fbGet(p.payDraft(s.id,mv)).catch(()=>null)))]);
   const cfgs={};list.forEach((s,i)=>cfgs[s.id]=cfgA[i]);
   const pre={recs,marks,advs,ledgers,cfgs};
   const E=DK.edits[mv]||(DK.edits[mv]={});
@@ -5139,12 +5236,20 @@ async function dkAdv(){
   const [ledA,advs]=await Promise.all([Promise.all(staffArr.map(s=>fbGet(p.advLedger(s.id)).catch(()=>null))),fbList(p.advances()).catch(()=>[])]);
   const owe=staffArr.map((s,i)=>({s,bal:ledA[i]&&ledA[i].balance>0?ledA[i].balance:0})).filter(x=>x.s.active||x.bal>0).sort((a,b)=>b.bal-a.bal);
   const cfgs=await Promise.all(owe.map(x=>getSalaryCfg(x.s.id).catch(()=>defaultSalaryCfg())));const max=Math.max(1,...owe.map(x=>x.bal));
-  const sel=DK.advSel,rows=advs.filter(a=>!sel||a.staffId===sel).sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,80);
+  const sel=DK.advSel,all=advs.filter(a=>!sel||a.staffId===sel).sort((a,b)=>(b.date||'').localeCompare(a.date||'')||(b.ts||0)-(a.ts||0)),rows=all.slice(0,300);
+  // Advances given before a staff member's opening balance are already inside that balance
+  const opn={};advs.forEach(a=>{if(a.opening)opn[a.staffId]=a;});
+  const inOpening=a=>{const o=opn[a.staffId];return !!o&&a!==o&&!a.opening&&(a.ts&&o.ts?a.ts<o.ts:(a.date||'')<=(o.date||''));};
+  // Month totals: advances given that month (opening balances are not new money, so not counted)
+  const mTot={};all.forEach(a=>{const m=(a.date||'').slice(0,7);const t=mTot[m]||(mTot[m]={amt:0,n:0});if(!a.opening){t.amt+=a.amount||0;t.n++;}});
+  let lastM=null;const advRow=a=>{const m=(a.date||'').slice(0,7),t=mTot[m]||{amt:0,n:0};let h='';
+    if(m!==lastM){lastM=m;h=`<tr class="dk-mrow"><td colspan="4"><b>${m?dkMonthLabel(m):'No date'}</b><span class="dk-mute"> · ${dkInr(t.amt)} given · ${t.n} advance${t.n===1?'':'s'}</span></td></tr>`;}
+    return h+`<tr><td style="white-space:nowrap">${ksEsc(a.date||'')}</td><td>${ksEsc(a.staffName||dkName(a.staffId))}</td><td class="r">${dkInr(a.amount)}</td><td class="dk-mute">${a.opening?'<span class="dk-tag info">Opening balance</span> ':''}${inOpening(a)?'<span class="dk-tag off" title="Given before the opening balance was set — already included in it">in opening balance</span> ':''}${a.fromRequest?'<span class="dk-tag off">from request</span> ':''}${ksEsc(a.note||'')}</td></tr>`;};
   dkEl('dk-page').innerHTML=`<div class="dk-ph"><div><h1>Advances</h1><p>${dkInr(owe.reduce((a,x)=>a+x.bal,0))} owed by ${owe.filter(x=>x.bal).length} staff · recovered from salary on payday</p></div><div class="dk-sp"></div><button class="dk-btn pri" onclick="openQuickAdvance()">＋ Give advance</button></div>
   <div class="dk-two"><div class="dk-card"><div class="dk-ch"><h2>Who owes</h2><span class="h">Click a name to see their advances</span></div>
     ${owe.map((x,i)=>`<div class="dk-li ${sel===x.s.id?'sel':''}" onclick="DK.advSel=DK.advSel==='${ksEsc(x.s.id)}'?null:'${ksEsc(x.s.id)}';deskRender(true)">${dkAv(x.s.id)}<div class="x" style="display:grid;gap:6px"><div style="display:flex;justify-content:space-between;gap:8px"><b>${ksEsc(x.s.name)}${x.s.active?'':' <span class="dk-tag off">inactive</span>'}</b><b class="${x.bal?'dk-acc':'dk-mute'}">${dkInr(x.bal)}</b></div><div class="dk-debt"><i style="width:${x.bal/max*100}%"></i></div><div style="display:flex;justify-content:space-between;align-items:center"><span class="dk-mute" style="font-size:11.5px">${cfgs[i]&&cfgs[i].base?Math.round(x.bal/cfgs[i].base*100)+'% of monthly salary':''}</span><button class="dk-btn sm" onclick="event.stopPropagation();setOpeningBalance('${ksEsc(x.s.id)}')">Set opening</button></div></div></div>`).join('')||'<div class="dk-empty">Nobody owes anything.</div>'}</div>
-  <div class="dk-card"><div class="dk-ch"><h2>${sel?ksEsc(dkName(sel))+' — advances':'Every advance'}</h2><span class="h">By the date it was asked</span>${sel?'<span class="dk-sp"></span><button class="dk-btn sm" onclick="DK.advSel=null;deskRender(true)">Show all</button>':''}</div>
-    <div class="dk-tw"><table class="dk-t"><thead><tr><th>Date</th><th>Staff</th><th class="r">Amount</th><th>Note</th></tr></thead><tbody>${rows.map(a=>`<tr><td>${ksEsc(a.date||'')}</td><td>${ksEsc(a.staffName||dkName(a.staffId))}</td><td class="r">${dkInr(a.amount)}</td><td class="dk-mute">${a.opening?'<span class="dk-tag info">Opening balance</span> ':''}${a.fromRequest?'<span class="dk-tag off">from request</span> ':''}${ksEsc(a.note||'')}</td></tr>`).join('')||'<tr><td colspan="4" class="dk-empty">No advances</td></tr>'}</tbody></table></div></div></div>`;
+  <div class="dk-card"><div class="dk-ch"><h2>${sel?ksEsc(dkName(sel))+' — advances':'Every advance'}</h2><span class="h">By month, newest first</span>${sel?'<span class="dk-sp"></span><button class="dk-btn sm" onclick="DK.advSel=null;deskRender(true)">Show all</button>':''}</div>
+    <div class="dk-tw"><table class="dk-t"><thead><tr><th>Date</th><th>Staff</th><th class="r">Amount</th><th>Note</th></tr></thead><tbody>${rows.map(advRow).join('')||'<tr><td colspan="4" class="dk-empty">No advances</td></tr>'}</tbody></table></div></div></div>`;
 }
 
 // ── Staff ──
@@ -5212,9 +5317,9 @@ function dkDelta(cur,prev,kind,goodUp){if(cur==null||prev==null)return '<span cl
   const good=goodUp?d>0:d<0;return `<span style="color:${good?'var(--green)':'var(--red)'}">${d>0?'▲':'▼'} ${Math.abs(d)}${kind==='pct'?' pts':kind==='h'?'h':''}</span> <span class="dk-mute">vs last month</span>`;}
 async function dkAnalytics(){
   const mv=DK.anMv||curMonthKey(),pv=dkShiftMv(mv,-1),act=staffArr.filter(s=>s.active);
-  const [recA,recB,marks,cfgs]=await Promise.all([dkMonthRecs(pv),dkMonthRecs(mv),dkMarks(),Promise.all(act.map(s=>getSalaryCfg(s.id).catch(()=>defaultSalaryCfg())))]);
-  const recs=recA.concat(recB);
-  const A=dkAnalyze(mv,act,cfgs,recs,marks),B=dkAnalyze(pv,act,cfgs,recs,marks),t=A.tot,b=B.tot;
+  const [recA,recB,marks,raws]=await Promise.all([dkMonthRecs(pv),dkMonthRecs(mv),dkMarks(),Promise.all(act.map(s=>getSalaryCfgRaw(s.id).catch(()=>defaultSalaryCfg())))]);
+  const recs=recA.concat(recB),cfgs=raws.map(c=>salaryCfgFor(c,mv));
+  const A=dkAnalyze(mv,act,cfgs,recs,marks),B=dkAnalyze(pv,act,raws.map(c=>salaryCfgFor(c,pv)),recs,marks),t=A.tot,b=B.tot;
   DK.anData=A;
   // Insights (plain sentences, only when the data supports them)
   const ins=[];const withP=A.staff.filter(o=>o.present>=3);
@@ -5653,6 +5758,7 @@ body.dk-body .sheet{border-radius:20px}
 .dk-btn.sm{padding:4px 9px;font-size:12px;border-radius:7px}
 .dk-btn:disabled{opacity:.4;cursor:not-allowed}
 .dk-row{display:flex;gap:8px;flex-wrap:wrap}
+.dk-mrow td{background:var(--s2);font-size:12.5px;padding-top:9px;padding-bottom:9px}
 .dk-tag{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;border-radius:20px;padding:2px 8px;white-space:nowrap;vertical-align:middle}
 .dk-tag.d::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 .dk-tag.good{background:color-mix(in srgb,var(--green) 16%,transparent);color:var(--green)}
@@ -5876,7 +5982,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.28.5</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.29.0</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6813,6 +6919,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="sheet-handle"></div>
     <div class="sheet-title">Salary Settings</div>
     <div class="sheet-sub" id="salary-sheet-name"></div>
+    <div id="ss-period-banner" style="display:none;font-size:12.5px;padding:10px 12px;border-radius:10px;margin-bottom:14px;background:rgba(59,130,246,.1);border:1px solid rgba(59,130,246,.3);"></div>
     <div class="form-group"><label class="form-label">Monthly Base Salary (₹)</label><input type="number" class="form-input" id="ss-base" min="0"></div>
     <div class="two-col">
       <div class="form-group"><label class="form-label">Weekly Off Day</label>
@@ -6852,6 +6959,10 @@ body.dk-body .sheet{border-radius:20px}
       </select></div>
     <div id="ss-late-fixed"><div class="form-group"><label class="form-label">Amount per Late Day (₹)</label><input type="number" class="form-input" id="ss-lateamt" min="0"></div></div>
     <div id="ss-late-half" style="display:none;"><div class="form-group"><label class="form-label">Half-day after how many lates?</label><input type="number" class="form-input" id="ss-lateafter" min="1" value="3"></div></div>
+    <div class="form-group" id="ss-from-wrap"><label class="form-label">These settings apply from</label>
+      <select class="form-input form-select" id="ss-from"></select>
+      <div style="font-size:11.5px;color:var(--muted);margin-top:6px;">Months before keep the salary they had. Months already paid always keep the salary they were paid on.</div></div>
+    <div id="ss-history" style="margin-bottom:14px;"></div>
     <div style="display:flex;gap:10px;">
       <button class="btn btn-primary" onclick="saveSalarySettings()">Save Settings</button>
       <button class="btn btn-secondary" onclick="closeSheet('sheet-salary')">Cancel</button>
@@ -6925,7 +7036,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.28.5</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.29.0</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6933,11 +7044,24 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.29.0 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.29.0</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Salary history: when you change a salary, choose the month it applies from. Earlier months keep the old salary and duty time</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Salary Settings → Salary history: add the salary a staff member had before (e.g. ₹17,500 up to October), edit or delete earlier salaries</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Every payment now keeps a copy of the salary it was paid on, so later salary changes never alter a paid month or its slip</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Advances (computer layout): grouped by month with the total given each month; advances already included in an opening balance are marked "in opening balance"</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.28.5 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.28.5</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.28.5</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll (computer layout): new 🔒 Finalize button, separate from Mark paid. Finalize locks a salary once you have checked it; press Mark paid on the day you actually pay. Advances are deducted only when marked paid</span></div>
