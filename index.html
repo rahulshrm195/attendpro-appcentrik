@@ -49,7 +49,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.28.4';
+const APP_VERSION = 'v1.28.5';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -2113,7 +2113,7 @@ window.applyPayInputs=async function(){
     if(!paid){
       try{
         await fbSet(p.payDraft(sid,mv),{staffId:sid,month:mv,incentive:parseInt(v('pay-incentive-inp'))||0,
-          advRecover:advInp&&advInp.dataset.userEdited&&advInp.value!==''?(parseInt(advInp.value)||0):null,ts:Date.now()});
+          advRecover:advInp&&advInp.dataset.userEdited&&advInp.value!==''?(parseInt(advInp.value)||0):null,finalized:false,ts:Date.now()});  // changing amounts reopens a finalized salary
       }catch(e){toast('Could not save: '+e.message,true);}
     }
   }
@@ -4999,40 +4999,43 @@ async function dkPay(){
   for(let i=0;i<list.length;i++){const s=list[i],pay=payA[i],dr=draftA[i];
     const saved={inc:pay?(pay.incentive||0):(dr&&dr.incentive)||0,adv:pay?(pay.advRecovered!=null?pay.advRecovered:null):(dr&&dr.advRecover!=null?dr.advRecover:null)};
     const C=await computePayroll(s.id,mv,{pre,payRec:pay,incentive:saved.inc,advRecover:saved.adv});
-    const e=E[s.id];const changed=!pay&&e&&(e.inc!==saved.inc||e.adv!==(saved.adv!=null?saved.adv:C.advRecover));
-    rows.push({s,C,pay,saved,e,changed,prob:recs.filter(r=>r.staffId===s.id&&detectPunchProblems(r,today).length).length});}
+    // Finalized = amounts checked and locked, salary not handed over yet (stored on the draft)
+    const fin=!pay&&dr&&dr.finalized?dr:null;
+    const e=fin?null:E[s.id];if(fin)delete E[s.id];
+    const changed=!pay&&!!e&&(e.inc!==saved.inc||e.adv!==(saved.adv!=null?saved.adv:C.advRecover));
+    rows.push({s,C,pay,fin,saved,e,changed,prob:recs.filter(r=>r.staffId===s.id&&detectPunchProblems(r,today).length).length});}
   DK.payRows=rows;
   if(!DK.sel||!rows.some(x=>x.s.id===DK.sel))DK.sel=(rows.find(x=>!x.pay)||rows[0]||{s:{}}).s.id;
-  const paidN=rows.filter(x=>x.pay).length,chN=rows.filter(x=>x.changed).length,incN=rows.filter(x=>x.C.incentive>0).length,fixN=rows.reduce((a,x)=>a+x.prob,0);
+  const finN=rows.filter(x=>x.fin).length,paidN=rows.filter(x=>x.pay).length,chN=rows.filter(x=>x.changed).length,incN=rows.filter(x=>x.C.incentive>0).length,fixN=rows.reduce((a,x)=>a+x.prob,0);
   [...DK.pick].forEach(id=>{const x=rows.find(r=>r.s.id===id);if(!x||x.pay||x.changed||cur)DK.pick.delete(id);});
   const T=k=>rows.reduce((a,x)=>a+(x.C[k]||0),0),unpaid=rows.filter(x=>!x.pay);
-  const PF=DK.pf,fl=x=>PF==='all'||(PF==='check'&&(x.prob||x.changed))||(PF==='ready'&&!x.pay&&!x.prob&&!x.changed)||(PF==='paid'&&x.pay);
-  const cnt=k=>rows.filter(x=>k==='check'?(x.prob||x.changed):k==='ready'?(!x.pay&&!x.prob&&!x.changed):!!x.pay).length;
+  const PF=DK.pf,fl=x=>PF==='all'||(PF==='check'&&(x.prob||x.changed))||(PF==='ready'&&!x.pay&&!x.fin&&!x.prob&&!x.changed)||(PF==='final'&&x.fin)||(PF==='paid'&&x.pay);
+  const cnt=k=>rows.filter(x=>k==='check'?(x.prob||x.changed):k==='ready'?(!x.pay&&!x.fin&&!x.prob&&!x.changed):k==='final'?!!x.fin:!!x.pay).length;
   const step=(n,done,now,t,sm,on)=>`<button class="dk-step ${done?'done':now?'now':''}" onclick="${on}"><span class="dot">${done?'✓':n}</span><span><b>${t}</b><small>${sm}</small></span></button>`;
   const pickNet=[...DK.pick].reduce((a,id)=>a+rows.find(r=>r.s.id===id).C.net,0);
   const val=(x,k)=>x.e?x.e[k]:(k==='inc'?x.saved.inc:(x.saved.adv!=null?x.saved.adv:x.C.advRecover));
   dkEl('dk-page').innerHTML=`<div class="dk-ph"><div><h1>Payroll · ${dkMonthLabel(mv)}</h1><p>${cur?'This month is still running — the numbers only count days up to today.':'Check punches, enter incentives, then pay. The slip gets a PAID stamp after you mark it paid.'}</p></div><div class="dk-sp"></div>${dkMsw(mv,'deskPayMonth')}</div>
   <div class="dk-payg"><div style="display:grid;gap:12px;min-width:0;align-content:start" id="dk-sheet">
-  <div class="dk-steps dk-g2">${step(1,!fixN,fixN>0,'Check punches',fixN?fixN+' day'+(fixN>1?'s':'')+' with problems':'No problems',"deskGo('fix')")}${step(2,!chN&&!fixN&&incN>0,!fixN&&chN>0,'Incentives & advances',chN?chN+' not saved':incN+' of '+rows.length+' have incentive',"document.getElementById('dk-sheet').scrollIntoView({behavior:'smooth'})")}${step(3,rows.length&&paidN===rows.length,!fixN&&!chN&&paidN<rows.length,'Pay',paidN+' of '+rows.length+' paid',"document.getElementById('dk-sheet').scrollIntoView({behavior:'smooth'})")}${step(4,false,rows.length&&paidN===rows.length,'Slips','PAID stamp after paying',"deskSlip(DK.sel)")}</div>
+  <div class="dk-steps dk-g2">${step(1,!fixN,fixN>0,'Check punches',fixN?fixN+' day'+(fixN>1?'s':'')+' with problems':'No problems',"deskGo('fix')")}${step(2,!chN&&!fixN&&incN>0,!fixN&&chN>0,'Incentives & advances',chN?chN+' not saved':incN+' of '+rows.length+' have incentive',"document.getElementById('dk-sheet').scrollIntoView({behavior:'smooth'})")}${step(3,rows.length&&paidN===rows.length,!fixN&&!chN&&paidN<rows.length,'Finalize & pay',paidN+' of '+rows.length+' paid'+(finN?' · '+finN+' finalized':''),"document.getElementById('dk-sheet').scrollIntoView({behavior:'smooth'})")}${step(4,false,rows.length&&paidN===rows.length,'Slips','PAID stamp after paying',"deskSlip(DK.sel)")}</div>
   <div class="dk-stats dk-g2"><div class="dk-stat"><div class="l">Cash to hand over</div><div class="v">${dkInr(T('net'))}</div><div class="f"><span>Gross <b>${dkInr(T('netBeforeAdv'))}</b></span><span>${rows.length} staff</span></div></div>
     <div class="dk-stat"><div class="l">Advance recovered</div><div class="v dk-acc">${dkInr(T('advActual'))}</div><div class="f"><span>Still owed after</span><b>${dkInr(rows.reduce((a,x)=>a+(x.C.advCarryFwd||0),0))}</b></div></div>
     <div class="dk-stat"><div class="l">Incentives & OT</div><div class="v" style="color:var(--green)">${dkInr(T('incentive')+T('otPay'))}</div><div class="f"><span>Incentive <b>${dkInr(T('incentive'))}</b></span><span>OT <b>${dkInr(T('otPay'))}</b></span></div></div>
     <div class="dk-stat"><div class="l">Paid</div><div class="v">${paidN} / ${rows.length}</div><div class="dk-bar"><i style="width:${rows.length?paidN/rows.length*100:0}%;background:var(--green)"></i></div><div class="f"><span>Unpaid</span><b>${dkInr(unpaid.reduce((a,x)=>a+x.C.net,0))}</b></div></div></div>
 
-    <div class="dk-chips">${[['all','All',rows.length],['check','Needs a look',cnt('check')],['ready','Ready to pay',cnt('ready')],['paid','Paid',cnt('paid')]].map(([k,l,n])=>`<button class="dk-chip ${PF===k?'on':''}" onclick="DK.pf='${k}';deskRender(true)">${l}<b>${n}</b></button>`).join('')}</div>
+    <div class="dk-chips">${[['all','All',rows.length],['check','Needs a look',cnt('check')],['ready','To finalize',cnt('ready')],['final','Finalized · unpaid',cnt('final')],['paid','Paid',cnt('paid')]].map(([k,l,n])=>`<button class="dk-chip ${PF===k?'on':''}" onclick="DK.pf='${k}';deskRender(true)">${l}<b>${n}</b></button>`).join('')}</div>
     <div class="dk-card"><div class="dk-tw"><table class="dk-t"><thead><tr><th style="width:28px"><input type="checkbox" class="dk-cbx" onchange="deskPickAll(this.checked)" aria-label="Select all ready" ${cur?'disabled':''}></th><th>Staff</th><th class="r">P / A</th><th class="r">Incentive</th><th class="r">Advance</th><th class="r">Net pay</th><th>Status</th></tr></thead><tbody>
     ${rows.filter(fl).map(x=>{const s=x.s,C=x.C,can=!x.pay&&!x.changed&&!cur,paidAmt=x.pay?(x.pay.netAmount!=null?x.pay.netAmount:parseInt(String(x.pay.net||'').replace(/[^0-9]/g,''))||0):0;
       return `<tr class="k ${DK.sel===s.id?'sel':''} ${x.changed?'chg':''}" onclick="deskSel('${ksEsc(s.id)}')">
       <td><input type="checkbox" class="dk-cbx" ${DK.pick.has(s.id)?'checked':''} ${can?'':'disabled'} onclick="event.stopPropagation()" onchange="deskPick('${ksEsc(s.id)}',this.checked)" aria-label="Select ${ksEsc(s.name)}"></td>
       <td><div class="dk-who">${dkAv(s.id)}<div><b>${ksEsc(s.name)}${s.active?'':' <span class="dk-tag off">inactive</span>'}</b><small>${dkInr(C.cfg.base)} · ${x.prob?'<span class="dk-bad">punch problem</span>':C.totalOutstanding>0&&!x.pay?'owes '+dkInr(C.totalOutstanding):'no advance'}</small></div></div></td>
       <td class="r" style="white-space:nowrap">${C.present} / <span class="${C.absent?'dk-bad':''}">${C.absent}</span></td>
-      <td class="r"><input class="dk-ci ${x.e&&x.e.inc!==x.saved.inc?'chg':''}" type="number" min="0" inputmode="numeric" value="${val(x,'inc')||''}" placeholder="0" ${x.pay?'disabled':''} onclick="event.stopPropagation()" oninput="deskEdit('${ksEsc(s.id)}','inc',this.value)" onkeydown="if(event.key==='Enter')deskSaveAll()" aria-label="Incentive for ${ksEsc(s.name)}"></td>
-      <td class="r">${C.totalOutstanding>0||x.pay?`<input class="dk-ci ${x.changed&&x.e&&x.e.adv!==(x.saved.adv!=null?x.saved.adv:C.advRecover)?'chg':''}" type="number" min="0" inputmode="numeric" value="${val(x,'adv')||''}" placeholder="0" ${x.pay?'disabled':''} onclick="event.stopPropagation()" oninput="deskEdit('${ksEsc(s.id)}','adv',this.value)" onkeydown="if(event.key==='Enter')deskSaveAll()" aria-label="Advance from ${ksEsc(s.name)}">`:'<span class="dk-mute">—</span>'}</td>
+      <td class="r"><input class="dk-ci ${x.e&&x.e.inc!==x.saved.inc?'chg':''}" type="number" min="0" inputmode="numeric" value="${val(x,'inc')||''}" placeholder="0" ${x.pay||x.fin?'disabled':''} onclick="event.stopPropagation()" oninput="deskEdit('${ksEsc(s.id)}','inc',this.value)" onkeydown="if(event.key==='Enter')deskSaveAll()" aria-label="Incentive for ${ksEsc(s.name)}"></td>
+      <td class="r">${C.totalOutstanding>0||x.pay?`<input class="dk-ci ${x.changed&&x.e&&x.e.adv!==(x.saved.adv!=null?x.saved.adv:C.advRecover)?'chg':''}" type="number" min="0" inputmode="numeric" value="${val(x,'adv')||''}" placeholder="0" ${x.pay||x.fin?'disabled':''} onclick="event.stopPropagation()" oninput="deskEdit('${ksEsc(s.id)}','adv',this.value)" onkeydown="if(event.key==='Enter')deskSaveAll()" aria-label="Advance from ${ksEsc(s.name)}">`:'<span class="dk-mute">—</span>'}</td>
       <td class="r"><b>${dkInr(C.net)}</b></td>
-      <td>${x.pay?`<span class="dk-tag good d">Paid ${ksEsc(x.pay.date||'')}</span>${paidAmt!==C.net?' <span class="dk-tag warn" title="Now calculates '+dkInr(C.net)+'">changed</span>':''}`:x.changed?'<span class="dk-tag brand d">Not saved</span>':x.prob?'<span class="dk-tag bad d">Check</span>':'<span class="dk-tag off d">Ready</span>'}</td></tr>`;}).join('')||'<tr><td colspan="7" class="dk-empty">Nobody here</td></tr>'}</tbody>
+      <td>${x.pay?`<span class="dk-tag good d">Paid ${ksEsc(x.pay.date||'')}</span>${paidAmt!==C.net?' <span class="dk-tag warn" title="Now calculates '+dkInr(C.net)+'">changed</span>':''}`:x.fin?`<span class="dk-tag info d">Finalized</span>${x.fin.finalNet!=null&&x.fin.finalNet!==C.net?' <span class="dk-tag warn" title="Finalized at '+dkInr(x.fin.finalNet)+', now calculates '+dkInr(C.net)+'">changed</span>':''}`:x.changed?'<span class="dk-tag brand d">Not saved</span>':x.prob?'<span class="dk-tag bad d">Check</span>':'<span class="dk-tag off d">Ready</span>'}</td></tr>`;}).join('')||'<tr><td colspan="7" class="dk-empty">Nobody here</td></tr>'}</tbody>
     <tfoot><tr><td></td><td>Total</td><td></td><td class="r">${dkInr(T('incentive'))}</td><td class="r">${dkInr(T('advActual'))}</td><td class="r">${dkInr(T('net'))}</td><td></td></tr></tfoot></table></div></div>
     <div class="dk-selbar" id="dk-savebar" ${chN?'':'hidden'}><span><b id="dk-chn">${chN}</b> changed — salaries update when you save</span><span class="dk-sp"></span><button class="dk-btn ghost" onclick="deskUndo()">Undo</button><button class="dk-btn pri" onclick="deskSaveAll()">Save all</button></div>
-    <div class="dk-selbar" ${DK.pick.size&&!chN?'':'hidden'}><span><b>${DK.pick.size}</b> selected · <b>${dkInr(pickNet)}</b></span><span class="dk-sp"></span><button class="dk-btn ghost" onclick="DK.pick.clear();deskRender(true)">Clear</button><button class="dk-btn pri" onclick="deskPayPicked()">Pay selected</button></div>
+    <div class="dk-selbar" ${DK.pick.size&&!chN?'':'hidden'}><span><b>${DK.pick.size}</b> selected · <b>${dkInr(pickNet)}</b></span><span class="dk-sp"></span><button class="dk-btn ghost" onclick="DK.pick.clear();deskRender(true)">Clear</button>${[...DK.pick].some(id=>{const r=rows.find(q=>q.s.id===id);return r&&!r.fin;})?'<button class="dk-btn" onclick="deskFinalizePicked()">🔒 Finalize selected</button>':''}<button class="dk-btn pri" onclick="deskPayPicked()">Pay selected</button></div>
   </div><div class="dk-card dk-det" id="dk-det"></div></div>`;
   dkDetail();
 }
@@ -5052,7 +5055,7 @@ window.deskEdit=function(sid,k,v){const mv=DK.mv,E=DK.edits[mv]||(DK.edits[mv]={
 window.deskUndo=function(){delete DK.edits[DK.mv];deskRender(true);};
 async function dkSaveDrafts(ids){const mv=DK.mv,E=DK.edits[mv]||{};const batch=writeBatch(db);let n=0;
   ids.forEach(sid=>{const e=E[sid],x=(DK.payRows||[]).find(r=>r.s.id===sid);if(!e||!x||x.pay)return;
-    batch.set(doc(db,p.payDraft(sid,mv)),{staffId:sid,month:mv,incentive:e.inc||0,advRecover:e.adv,ts:Date.now()},{merge:true});n++;});
+    batch.set(doc(db,p.payDraft(sid,mv)),{staffId:sid,month:mv,incentive:e.inc||0,advRecover:e.adv,finalized:false,ts:Date.now()},{merge:true});n++;});
   if(!n)return 0;await batch.commit();ids.forEach(sid=>delete E[sid]);return n;}
 window.deskSaveAll=async function(){setLoading(true,'Saving…');try{const n=await dkSaveDrafts(Object.keys(DK.edits[DK.mv]||{}));toast(n?'✓ Saved for '+n+' staff':'Nothing to save');}catch(e){toast('Error: '+e.message,true);}setLoading(false);deskRender(true);};
 function dkDetail(focusKey){
@@ -5062,17 +5065,18 @@ function dkDetail(focusKey){
   const s=x.s,C=x.C,cur=DK.mv===curMonthKey(),e=x.e,adv=e?e.adv:(x.saved.adv!=null?x.saved.adv:C.advRecover),inc=e?e.inc:x.saved.inc;
   const paidAmt=x.pay?(x.pay.netAmount!=null?x.pay.netAmount:parseInt(String(x.pay.net||'').replace(/[^0-9]/g,''))||0):0;
   const L=(a,b,k)=>`<div class="ln ${k||''}"><span>${a}</span><span>${b}</span></div>`,pd=Math.round(C.perDay);
-  host.innerHTML=`<div class="dk-ch">${dkAv(s.id)}<div><h2>${ksEsc(s.name)}</h2><span class="h">${dkInr(C.cfg.base)}/month · day ${dkInr(pd)}${C.cfg.weeklyOff>=0?' · off '+DOW_SHORT[C.cfg.weeklyOff]:''} · duty ${ksEsc(dutyText(C.cfg))} · paid on ${C.stdHours}h/day</span></div><span class="dk-sp"></span>${x.pay?'<span class="dk-tag good d">Paid '+ksEsc(x.pay.date||'')+' · '+ksEsc(x.pay.mode||'')+'</span>':x.changed?'<span class="dk-tag brand d">Not saved</span>':''}</div>
+  host.innerHTML=`<div class="dk-ch">${dkAv(s.id)}<div><h2>${ksEsc(s.name)}</h2><span class="h">${dkInr(C.cfg.base)}/month · day ${dkInr(pd)}${C.cfg.weeklyOff>=0?' · off '+DOW_SHORT[C.cfg.weeklyOff]:''} · duty ${ksEsc(dutyText(C.cfg))} · paid on ${C.stdHours}h/day</span></div><span class="dk-sp"></span>${x.pay?'<span class="dk-tag good d">Paid '+ksEsc(x.pay.date||'')+' · '+ksEsc(x.pay.mode||'')+'</span>':x.fin?'<span class="dk-tag info d">Finalized '+ksEsc(x.fin.finalizedAt||'')+'</span>':x.changed?'<span class="dk-tag brand d">Not saved</span>':''}</div>
   ${x.pay&&paidAmt!==C.net?`<div class="dk-sec"><div class="dk-alert"><span class="ic">!</span><div class="t">Paid ${ksEsc(x.pay.net||'')}, now calculates <b>${dkInr(C.net)}</b> (attendance or amounts changed since).</div></div></div>`:''}
+  ${x.fin&&x.fin.finalNet!=null&&x.fin.finalNet!==C.net?`<div class="dk-sec"><div class="dk-alert"><span class="ic">!</span><div class="t">Finalized at ${dkInr(x.fin.finalNet)}, now calculates <b>${dkInr(C.net)}</b> (attendance or advances changed since).</div><button class="dk-btn sm" onclick="deskFinalize('${ksEsc(s.id)}')">Finalize at ${dkInr(C.net)}</button></div></div>`:''}
   ${x.prob?`<div class="dk-sec"><div class="dk-alert bad"><span class="ic">!</span><div class="t">${x.prob} day${x.prob>1?'s':''} with punch problems this month</div><button class="dk-btn sm red" onclick="deskGo('fix')">Fix</button></div></div>`:''}
   ${C.joiningDate&&C.joiningDate.startsWith(DK.mv)?`<div class="dk-sec"><span class="dk-mute" style="font-size:12px">Joined ${ksEsc(C.joiningDate)} — partial month</span></div>`:''}
   <div class="dk-sec"><h4>Attendance</h4><div class="dk-mini"><div><b style="color:var(--green)">${C.present}</b><span>Present</span></div><div><b style="color:var(--red)">${C.absent}</b><span>Absent</span></div><div><b style="color:var(--accent)">${C.late}</b><span>Late${C.lateD?'':' · no cut'}</span></div><div><b style="color:var(--purple)">${C.shortDays}</b><span>Short · ${dkHM(C.shortMins)}</span></div><div><b style="color:var(--blue)">${C.offDays}</b><span>Off / leave</span></div><div><b>${dkHM(C.otMins)}</b><span>Overtime</span></div></div></div>
-  <div class="dk-sec"><h4>Incentive & advance</h4><div class="dk-field"><label for="dk-dinc">Sales incentive (₹)</label><input id="dk-dinc" class="dk-inp" type="number" min="0" value="${inc||''}" placeholder="0" ${x.pay?'disabled':''} oninput="deskEdit('${ksEsc(s.id)}','inc',this.value)" onkeydown="if(event.key==='Enter')deskApply()"></div>
+  <div class="dk-sec"><h4>Incentive & advance</h4><div class="dk-field"><label for="dk-dinc">Sales incentive (₹)</label><input id="dk-dinc" class="dk-inp" type="number" min="0" value="${inc||''}" placeholder="0" ${x.pay||x.fin?'disabled':''} oninput="deskEdit('${ksEsc(s.id)}','inc',this.value)" onkeydown="if(event.key==='Enter')deskApply()"></div>
     ${C.totalOutstanding>0?`<div class="dk-adv"><div style="display:flex;justify-content:space-between"><b>Owes</b><b class="dk-acc">${dkInr(C.totalOutstanding)}</b></div><div class="dk-debt"><i style="width:${Math.min(100,(adv||0)/C.totalOutstanding*100)}%"></i></div>
       ${C.carryFwdAmt>0&&C.thisMonthTotal>0?`<span class="dk-mute" style="font-size:12px">Carried forward ${dkInr(C.carryFwdAmt)} · this month ${dkInr(C.thisMonthTotal)}</span>`:''}
-      <div class="dk-ir"><input id="dk-dadv" class="dk-inp" type="number" min="0" value="${adv||''}" placeholder="0" ${x.pay?'disabled':''} oninput="deskEdit('${ksEsc(s.id)}','adv',this.value)" onkeydown="if(event.key==='Enter')deskApply()" aria-label="Recover this month">${x.pay?'':`<button class="dk-btn sm" onclick="deskAdvPreset(1)">Full</button><button class="dk-btn sm" onclick="deskAdvPreset(.5)">Half</button><button class="dk-btn sm" onclick="deskAdvPreset(0)">None</button>`}</div>
+      <div class="dk-ir"><input id="dk-dadv" class="dk-inp" type="number" min="0" value="${adv||''}" placeholder="0" ${x.pay||x.fin?'disabled':''} oninput="deskEdit('${ksEsc(s.id)}','adv',this.value)" onkeydown="if(event.key==='Enter')deskApply()" aria-label="Recover this month">${x.pay||x.fin?'':`<button class="dk-btn sm" onclick="deskAdvPreset(1)">Full</button><button class="dk-btn sm" onclick="deskAdvPreset(.5)">Half</button><button class="dk-btn sm" onclick="deskAdvPreset(0)">None</button>`}</div>
       <span class="${!x.changed&&C.advActual<C.advRecover?'dk-acc':'dk-mute'}" style="font-size:12px${!x.changed&&C.advActual<C.advRecover?';font-weight:600':''}">${x.pay?'Recovered '+dkInr(C.advActual)+(C.advCarryFwd>0?' · '+dkInr(C.advCarryFwd)+' still owed':''):x.changed?'Press Apply to see what carries to next month':C.advActual<C.advRecover?'Salary is only '+dkInr(C.netBeforeAdv)+', so only '+dkInr(C.advActual)+' can be recovered — '+dkInr(C.advCarryFwd)+' carries to next month':C.advCarryFwd>0?dkInr(C.advCarryFwd)+' carries to next month':'✓ Cleared this month'}</span></div>`:'<span class="dk-mute" style="font-size:12px">No advance owed.</span>'}
-    ${x.pay?'':`<button class="dk-btn ${x.changed?'pri':''}" style="justify-content:center" ${x.changed?'':'disabled'} onclick="deskApply()">✓ Apply to ${dkMonthLabel(DK.mv).split(' ')[0]} salary</button>`}</div>
+    ${x.pay||x.fin?'':`<button class="dk-btn ${x.changed?'pri':''}" style="justify-content:center" ${x.changed?'':'disabled'} onclick="deskApply()">✓ Apply to ${dkMonthLabel(DK.mv).split(' ')[0]} salary</button>`}</div>
   <div class="dk-sec"><h4>Salary</h4><div class="dk-lines">
     ${L('Base pay · '+dkHM(C.totalWorkedMins)+' × '+dkInr(C.perDay/C.stdHours)+'/hr',dkInr(C.basePay))}
     ${L('Overtime · '+dkHM(C.otMins)+' × '+dkInr(C.otRatePerHour)+'/hr','+'+dkInr(C.otPay))}
@@ -5085,8 +5089,9 @@ function dkDetail(focusKey){
     ${L('Gross',dkInr(C.netBeforeAdv),'tot')}${L('Advance recovered','−'+dkInr(C.advActual))}${C.totalOutstanding>0?L('Advance still owed after this month',dkInr(C.advCarryFwd),C.advCarryFwd>0?'dk-acc':''):''}</div>
     <div class="dk-net"><span>Net pay${x.changed?' (before your change)':''}</span><b>${dkInr(C.net)}</b></div></div>
   <div class="dk-sec"><h4>Pay</h4>${x.pay?'':`<div class="dk-f2"><div class="dk-field"><label for="dk-pm">Paid by</label><select id="dk-pm" class="dk-inp"><option value="cash">💵 Cash</option><option value="upi">📱 UPI / GPay</option><option value="bank">🏦 Bank transfer</option></select></div><div class="dk-field"><label for="dk-pn">Note</label><input id="dk-pn" class="dk-inp" placeholder="e.g. UPI ref 1234"></div></div>`}<div id="dk-bank"></div>
-    <div class="dk-row">${x.pay?`<button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Slip (PAID)</button>${paidAmt!==C.net?`<button class="dk-btn pri" onclick="deskPay('${ksEsc(s.id)}',true)">Update payment to ${dkInr(C.net)}</button>`:''}`:`<button class="dk-btn pri" ${x.changed||cur?'disabled':''} onclick="deskPay('${ksEsc(s.id)}')">✓ Mark ${dkInr(C.net)} paid</button><button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Preview slip</button>`}<button class="dk-btn" onclick="deskStatement('${ksEsc(s.id)}')">📄 Day-by-day</button><button class="dk-btn" onclick="deskEmailSlip('${ksEsc(s.id)}')" title="${s.email?ksEsc(s.email):'No email saved'}">✉️ Email slip</button></div>
-    ${x.changed?'<span class="dk-acc" style="font-size:12px;font-weight:600">Apply or Save all first — the amounts above don\'t include your change yet.</span>':cur&&!x.pay?'<span class="dk-mute" style="font-size:12px">Pay after the month ends.</span>':''}</div>`;
+    <div class="dk-row">${x.pay?`<button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Slip (PAID)</button>${paidAmt!==C.net?`<button class="dk-btn pri" onclick="deskPay('${ksEsc(s.id)}',true)">Update payment to ${dkInr(C.net)}</button>`:''}`:x.fin?`<button class="dk-btn pri" onclick="deskPay('${ksEsc(s.id)}')">✓ Mark ${dkInr(C.net)} paid</button><button class="dk-btn" onclick="deskUnfinalize('${ksEsc(s.id)}')">✏️ Reopen to edit</button><button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Preview slip</button>`
+      :`<button class="dk-btn pri" ${x.changed||cur?'disabled':''} onclick="deskFinalize('${ksEsc(s.id)}')" title="Lock the amounts now — mark paid later, on the day you pay">🔒 Finalize ${dkInr(C.net)}</button><button class="dk-btn" ${x.changed||cur?'disabled':''} onclick="deskPay('${ksEsc(s.id)}')">✓ Mark ${dkInr(C.net)} paid</button><button class="dk-btn" onclick="deskSlip('${ksEsc(s.id)}')">🖨️ Preview slip</button>`}<button class="dk-btn" onclick="deskStatement('${ksEsc(s.id)}')">📄 Day-by-day</button><button class="dk-btn" onclick="deskEmailSlip('${ksEsc(s.id)}')" title="${s.email?ksEsc(s.email):'No email saved'}">✉️ Email slip</button></div>
+    ${x.changed?'<span class="dk-acc" style="font-size:12px;font-weight:600">Apply or Save all first — the amounts above don\'t include your change yet.</span>':x.fin?'<span class="dk-mute" style="font-size:12px">Salary finalized on '+ksEsc(x.fin.finalizedAt||'')+' — amounts are locked. Press Mark paid on the day you pay.</span>':!x.pay&&!cur?'<span class="dk-mute" style="font-size:12px">Finalize locks the amounts once checked; Mark paid records the payment (advance is deducted then).</span>':cur&&!x.pay?'<span class="dk-mute" style="font-size:12px">Pay after the month ends.</span>':''}</div>`;
   // Typed in the side panel: put the cursor back in the same box. Typed in the table: leave it there.
   if(focusKey&&typingHere){const el=dkEl(focusKey==='inc'?'dk-dinc':'dk-dadv');if(el){el.focus();const v=el.value;el.value='';el.value=v;}}
   fillBankBox('dk-bank',s.id);
@@ -5099,6 +5104,23 @@ window.deskPay=async function(sid,update){const x=(DK.payRows||[]).find(r=>r.s.i
   const ok=await recordPayment(sid,DK.mv,{net:'₹'+x.C.net.toLocaleString('en-IN'),mode:update?(x.pay.mode||'cash'):dkEl('dk-pm').value,note:update?(x.pay.note||''):dkEl('dk-pn').value,advActual:x.C.advActual,incentive:x.C.incentive});
   if(ok){dkAfterPay();const nx=(DK.payRows||[]).find(r=>!r.pay&&r.s.id!==sid);if(nx&&!update)DK.sel=nx.s.id;deskRender(true);}};
 function dkAfterPay(){renderPayHistory();renderAdvList();populatePayrollDropdowns();}
+// Finalize: lock this month's amounts (incentive, advance to recover, net) without paying yet.
+// Stored on the payroll draft; Mark paid (recordPayment) later records the payment and updates the advance ledger.
+async function dkFinalizeRows(list){const mv=DK.mv,batch=writeBatch(db),now=Date.now(),at=new Date().toLocaleDateString('en-IN');let n=0;
+  list.forEach(x=>{if(!x||x.pay||x.changed)return;
+    batch.set(doc(db,p.payDraft(x.s.id,mv)),{staffId:x.s.id,month:mv,incentive:x.C.incentive||0,advRecover:x.C.advRecover||0,
+      finalized:true,finalNet:x.C.net,finalAdv:x.C.advActual,finalizedAt:at,finalizedTs:now,ts:now},{merge:true});n++;});
+  if(n)await batch.commit();return n;}
+window.deskFinalize=async function(sid){const x=(DK.payRows||[]).find(r=>r.s.id===sid);if(!x)return;
+  if(x.changed)return toast('Apply first so the salary includes your change',true);
+  setLoading(true,'Finalizing…');try{await dkFinalizeRows([x]);toast('🔒 '+x.s.name+' finalized at '+dkInr(x.C.net)+' — mark paid when you pay');}catch(e){toast('Error: '+e.message,true);}
+  setLoading(false);deskRender(true);};
+window.deskFinalizePicked=async function(){const list=[...DK.pick].map(id=>(DK.payRows||[]).find(r=>r.s.id===id)).filter(x=>x&&!x.fin);if(!list.length)return;
+  setLoading(true,'Finalizing…');try{const n=await dkFinalizeRows(list);DK.pick.clear();toast('🔒 '+n+' salar'+(n===1?'y':'ies')+' finalized');}catch(e){toast('Error: '+e.message,true);}
+  setLoading(false);deskRender(true);};
+window.deskUnfinalize=async function(sid){const x=(DK.payRows||[]).find(r=>r.s.id===sid);if(!x||!x.fin)return;
+  setLoading(true,'Reopening…');try{await fbSet(p.payDraft(sid,DK.mv),{finalized:false});toast('✏️ '+x.s.name+' reopened — you can edit the amounts');}catch(e){toast('Error: '+e.message,true);}
+  setLoading(false);deskRender(true);};
 window.deskPayPicked=function(){const list=[...DK.pick].map(id=>(DK.payRows||[]).find(r=>r.s.id===id)).filter(Boolean);if(!list.length)return;const tot=list.reduce((a,x)=>a+x.C.net,0);
   dkModal(`<header><div class="dk-sp"><h3>Pay ${list.length} staff</h3><div class="dk-mute">${dkMonthLabel(DK.mv)} · ${dkInr(tot)} in total</div></div><button class="dk-xb" onclick="dkCloseModal()" aria-label="Close">×</button></header>
   <div class="bd"><div class="dk-lines">${list.map(x=>`<div class="ln"><span>${ksEsc(x.s.name)}</span><span>${dkInr(x.C.net)}</span></div>`).join('')}<div class="ln tot"><span>Total</span><span>${dkInr(tot)}</span></div></div>
@@ -5854,7 +5876,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.28.4</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.28.5</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -6903,7 +6925,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.28.4</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.28.5</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -6911,11 +6933,23 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.28.5 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.28.5</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Payroll (computer layout): new 🔒 Finalize button, separate from Mark paid. Finalize locks a salary once you have checked it; press Mark paid on the day you actually pay. Advances are deducted only when marked paid</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Select several staff and press "Finalize selected" to finalize them together; "Reopen to edit" unlocks a finalized salary</span></div>
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>If attendance changes after finalizing, the salary shows "changed" with a button to finalize at the new amount</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.28.4 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.28.4</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.28.4</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Computer layout: the browser tab shows the page you are on (e.g. "Payroll · AttendPro"), so several open tabs are easy to tell apart</span></div>
