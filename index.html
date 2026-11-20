@@ -49,7 +49,7 @@ const db   = getFirestore(app);
 
 // App version — shown beside the name in every top bar. Bump with each release
 // (together with the What's New entry and CACHE_NAME in sw.js).
-const APP_VERSION = 'v1.30.0';
+const APP_VERSION = 'v1.30.1';
 function showAppVersion(){
   document.querySelectorAll('.tb-title,.kiosk-title').forEach(function(el){
     var nx=el.nextElementSibling;
@@ -4817,51 +4817,59 @@ window.deviceLogin = async function(){
 // ─────────────────────────────────────────────
 //  PWA — SERVICE WORKER + NOTIFICATIONS
 // ─────────────────────────────────────────────
+// Updates: sw.js takes over as soon as a new copy installs, so the page never
+// reloads by itself. When the new worker's version differs from this page's
+// APP_VERSION a banner offers "Update Now" (one reload). A worker re-installed
+// with the same version (browser re-check, CDN hiccup) is ignored. Unattended
+// kiosk phones still reload themselves for a real new version.
+var swReloading=false;
+function swReloadOnce(){if(swReloading)return;swReloading=true;window.location.reload();}
+function swVersionOf(w){
+  return new Promise(function(res){
+    if(!w)return res(null);
+    try{
+      var ch=new MessageChannel(),t=setTimeout(function(){res(null);},3000);
+      ch.port1.onmessage=function(e){clearTimeout(t);res(e.data&&e.data.version||null);};
+      w.postMessage('GET_VERSION',[ch.port2]);
+    }catch(e){res(null);}
+  });
+}
+function swCheckNewVersion(){
+  swVersionOf(navigator.serviceWorker.controller).then(function(v){
+    if(!v||v==='attendpro-'+APP_VERSION)return;
+    if(localStorage.getItem('ap_kiosk_session'))return swReloadOnce();
+    showUpdateBanner(v.replace(/^attendpro-/,''));
+  });
+}
 if('serviceWorker' in navigator){
   window.addEventListener('load',function(){
+    var hadController=!!navigator.serviceWorker.controller;
     navigator.serviceWorker.register('sw.js').then(function(reg){
-      console.log('SW registered');
-      // Check for updates every 60 seconds
-      setInterval(function(){reg.update();},60000);
-      // Detect when a new service worker is waiting
-      reg.addEventListener('updatefound',function(){
-        var newWorker=reg.installing;
-        if(!newWorker)return;
-        newWorker.addEventListener('statechange',function(){
-          if(newWorker.state==='installed'&&navigator.serviceWorker.controller){
-            // New version available — show update banner
-            showUpdateBanner();
-          }
-        });
-      });
+      // Check for a new version every 5 minutes and when the app is reopened
+      setInterval(function(){reg.update().catch(function(){});},300000);
+      document.addEventListener('visibilitychange',function(){if(!document.hidden)reg.update().catch(function(){});});
+      if(reg.waiting)reg.waiting.postMessage('SKIP_WAITING');
     }).catch(function(){});
-    // Also detect controller change (update applied)
     navigator.serviceWorker.addEventListener('controllerchange',function(){
-      window.location.reload();
+      if(hadController)swCheckNewVersion();
+      hadController=true;
     });
   });
 }
 
-function showUpdateBanner(){
+function showUpdateBanner(ver){
   var existing=document.getElementById('update-banner');
   if(existing)return;
   var banner=document.createElement('div');
   banner.id='update-banner';
   banner.style.cssText='position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:580px;z-index:9999;background:linear-gradient(135deg,#f5a623,#e8522a);padding:14px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px;box-shadow:0 -4px 20px rgba(0,0,0,.3);';
-  banner.innerHTML='<div style="color:#fff;font-size:13px;font-weight:700;">🆕 New version available!</div>'
-    +'<button onclick="applyUpdate()" style="background:#fff;color:#e8522a;border:none;border-radius:20px;padding:8px 18px;font-size:13px;font-weight:800;cursor:pointer;flex-shrink:0;">Update Now</button>';
+  banner.innerHTML='<div style="color:#fff;font-size:13px;font-weight:700;">🆕 New version'+(ver?' '+ver.replace(/[^\w.-]/g,''):'')+' available</div>'
+    +'<div style="display:flex;gap:8px;flex-shrink:0;"><button onclick="this.closest(\'#update-banner\').remove()" style="background:transparent;color:#fff;border:1px solid rgba(255,255,255,.6);border-radius:20px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;">Later</button>'
+    +'<button onclick="applyUpdate()" style="background:#fff;color:#e8522a;border:none;border-radius:20px;padding:8px 18px;font-size:13px;font-weight:800;cursor:pointer;">Update Now</button></div>';
   document.body.appendChild(banner);
 }
 
-window.applyUpdate=function(){
-  navigator.serviceWorker.getRegistration().then(function(reg){
-    if(reg&&reg.waiting){
-      reg.waiting.postMessage('SKIP_WAITING');
-    } else {
-      window.location.reload();
-    }
-  });
-};
+window.applyUpdate=function(){swReloadOnce();};
 
 function requestNotifPermission(){
   if(!('Notification' in window)) return;
@@ -6150,7 +6158,7 @@ body.dk-body .sheet{border-radius:20px}
     <div class="landing-logo">AP</div>
     <div style="font-family:var(--fh);font-size:28px;font-weight:800;letter-spacing:-1px;margin-bottom:8px;">Manage your staff<br><span style="background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">the smart way</span></div>
     <div style="color:var(--muted);font-size:14px;line-height:1.6;max-width:320px;margin:0 auto 14px;">Attendance, payroll, leaves & advances — all in one place. Built for small businesses.</div>
-    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.30.0</span>
+    <span style="display:inline-block;font-size:12px;font-weight:800;color:#fff;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:20px;padding:5px 16px;letter-spacing:.5px;margin-bottom:20px;box-shadow:0 4px 14px rgba(245,166,35,.35);">v1.30.1</span>
   </div>
   <div class="feature-grid">
     <div class="feature-card"><div class="feature-icon">👁️</div><div class="feature-title">Selfie Proof</div><div class="feature-desc">Anti-proxy attendance with photo verification</div></div>
@@ -7204,7 +7212,7 @@ window.joinBusiness = async function(){
     <div class="card-sm" style="margin-bottom:14px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div><div style="font-family:var(--fh);font-size:14px;font-weight:700;">AttendPro</div><div style="font-size:11px;color:var(--muted);margin-top:2px;">Staff Management Platform</div></div>
-        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.30.0</span>
+        <span style="font-size:11px;font-weight:700;color:var(--accent);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.2);border-radius:20px;padding:3px 10px;">v1.30.1</span>
       </div>
     </div>
     <div class="card-sm" style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;">
@@ -7212,11 +7220,21 @@ window.joinBusiness = async function(){
       <button class="btn btn-ghost btn-sm" onclick="toggleNotifications()" id="notif-toggle-btn">Enable</button>
     </div>
     <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📋 What's New</div>
+    <!-- v1.30.1 -->
+    <div style="margin-bottom:16px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.30.1</span>
+        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>The app no longer refreshes by itself in the middle of work. "New version available" only shows for a real new version, with Update Now and Later, and updating refreshes the page once</span></div>
+      </div>
+    </div>
+    <div style="height:1px;background:var(--border);margin-bottom:16px;"></div>
     <!-- v1.30.0 -->
     <div style="margin-bottom:16px;">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--accent);">v1.30.0</span>
-        <span style="font-size:10px;font-weight:700;color:var(--green);background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);border-radius:10px;padding:2px 7px;">CURRENT</span>
+        <span style="font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);">v1.30.0</span>
       </div>
       <div style="display:flex;flex-direction:column;gap:7px;">
         <div style="font-size:13px;display:flex;gap:8px;"><span style="color:var(--green);flex-shrink:0;font-weight:700;">+</span><span>Salary is now worked out exactly and rounded only once, at the total — so it matches a staff member's own calculation. Each line still shows whole rupees and the lines always add up to the total</span></div>

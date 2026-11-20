@@ -6,7 +6,7 @@
 //  • Background sync ready (future)
 // ═══════════════════════════════════════════════
 
-const CACHE_NAME    = 'attendpro-v1.30.0';
+const CACHE_NAME    = 'attendpro-v1.30.1';
 const OFFLINE_URL   = './index.html';
 
 // Files to cache on install
@@ -114,7 +114,9 @@ self.addEventListener('notificationclick', event => {
 // ── MESSAGE: version check from app ──
 self.addEventListener('message', event => {
   if (event.data === 'GET_VERSION') {
-    event.source.postMessage({ version: CACHE_NAME });
+    const reply = event.ports && event.ports[0];
+    if (reply) reply.postMessage({ version: CACHE_NAME });
+    else if (event.source) event.source.postMessage({ version: CACHE_NAME });
   }
   if (event.data === 'SKIP_WAITING') {
     self.skipWaiting();
